@@ -198,7 +198,11 @@ function blankWeek(date, managers, prev) {
   const calls = {};
   managers.forEach((m) => {
     const p = prev?.calls?.[m];
-    calls[m] = { call: p?.call ?? null, commit: p?.commit ?? null, best: p?.best ?? null, note: "", prior: p?.call ?? null };
+    calls[m] = {
+      call: p?.call ?? null, commit: p?.commit ?? null, best: p?.best ?? null,
+      goal: p?.goal ?? null, closedWon: p?.closedWon ?? null,
+      note: "", prior: p?.call ?? null,
+    };
   });
   return {
     id: date, date,
@@ -206,7 +210,7 @@ function blankWeek(date, managers, prev) {
     calls,
     swings: [],
     headlines: (prev?.headlines || []).map((h) => ({ ...h, id: uid() })),
-    tips: [],
+    tips: (prev?.tips || []).map((t) => ({ ...t, id: uid() })),
     trending: (prev?.trending || []).map((t) => ({ ...t, id: uid() })),
   };
 }
@@ -222,28 +226,11 @@ export default function App() {
     (async () => {
       let m = await sget("meta");
       if (!m) {
-        const managers = ["Alvarez", "Chen", "Okafor", "Petrova"];
+        const managers = ["Rachel", "Michaela", "Emma", "Sammi", "Gabby", "Suchita", "Eli"];
         const d = thisMonday();
         m = { activeWeek: d, weeks: [d], managers,
           thresholds: { d180: 50, d270: 90, mode: "and" } };
         const wk = blankWeek(d, managers, null);
-        wk.plan = 4200000;
-        wk.calls["Alvarez"] = { call: 980000, commit: 820000, best: 1100000, note: "Renewals tracking; one logo at risk", prior: 940000 };
-        wk.calls["Chen"] = { call: 1150000, commit: 1000000, best: 1240000, note: "Strong new-biz pull-in", prior: 1090000 };
-        wk.calls["Okafor"] = { call: 870000, commit: 760000, best: 980000, note: "Two deals slipping to next qtr", prior: 905000 };
-        wk.calls["Petrova"] = { call: 1010000, commit: 900000, best: 1120000, note: "", prior: 1010000 };
-        wk.headlines = [
-          { id: uid(), account: "Northwind", owner: "Chen", note: "Expansion to 3 new teams after pilot win" },
-          { id: uid(), account: "Helio Corp", owner: "Okafor", note: "Champion left — re-establishing exec sponsor" },
-        ];
-        wk.swings = [
-          { id: uid(), account: "Vertex", owner: "Alvarez", dir: "up", amount: 140000, note: "Legal cleared, signature expected Thu" },
-          { id: uid(), account: "Helio Corp", owner: "Okafor", dir: "down", amount: 90000, note: "Budget freeze risk" },
-        ];
-        wk.trending = [
-          { id: uid(), account: "Helio Corp", owner: "Okafor", day180: 42, day270: 78 },
-          { id: uid(), account: "Quill Labs", owner: "Petrova", day180: 61, day270: 85 },
-        ];
         await sset("meta", m); await sset("week:" + d, wk);
         setWeeks({ [d]: wk });
       } else {
@@ -322,8 +309,8 @@ export default function App() {
               <button key={key} className={tab === key ? "on" : ""} onClick={() => setTab(key)}>
                 <Icon size={16} />{label}
                 {key === "trending" && flagged.length > 0 && <span className="navtag">{flagged.length}</span>}
-                {key === "tips" && week.tips.filter((t) => t.included).length > 0 &&
-                  <span className="navtag" style={{ background: T.up }}>{week.tips.filter((t) => t.included).length}</span>}
+                {key === "tips" && week.tips.filter((t) => (t.status || "not_tried") !== "not_tried").length > 0 &&
+                  <span className="navtag" style={{ background: T.up }}>{week.tips.filter((t) => (t.status || "not_tried") !== "not_tried").length}</span>}
               </button>
             ))}
           </div>
@@ -334,7 +321,7 @@ export default function App() {
             {tab === "calls" && <Calls {...{ meta, week, prevWeek, updateWeek, saveMeta, totalCall }} />}
             {tab === "swings" && <Swings {...{ week, meta, updateWeek }} />}
             {tab === "headlines" && <Headlines {...{ week, meta, updateWeek }} />}
-            {tab === "tips" && <Tips {...{ week, updateWeek }} />}
+            {tab === "tips" && <Tips {...{ meta, week, updateWeek }} />}
             {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged }} />}
             {tab === "update" && <Update {...{ meta, week, totalCall, totalCommit, netSwing, flagged }} />}
             {tab === "settings" && <SettingsTab {...{ meta, saveMeta, updateWeek, week }} />}
@@ -361,10 +348,53 @@ function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwin
     return { wk: fmtDate(d), call, plan: w.plan || null };
   }).filter(Boolean);
 
+  const hasAttainment = meta.managers.some((m) => {
+    const c = week.calls[m] || {};
+    return c.goal != null || c.closedWon != null;
+  });
+  const totalWon = meta.managers.reduce((s, m) => s + (week.calls[m]?.closedWon || 0), 0);
+  const totalGoal = meta.managers.reduce((s, m) => s + (week.calls[m]?.goal || 0), 0);
+  const totalAttPct = totalGoal ? (totalWon / totalGoal) * 100 : null;
+
   return (
     <>
       <h2>This week at a glance</h2>
       <p className="sub">Live snapshot for the meeting on {fmtDate(week.date)}. Everything here is captured against this week and kept as you move forward.</p>
+
+      {hasAttainment && (
+        <div className="card" style={{ marginBottom: 18 }}>
+          <div className="between" style={{ marginBottom: 12 }}>
+            <b style={{ fontSize: 14 }}>Goal attainment</b>
+            {totalAttPct != null && (
+              <span className="mono" style={{ fontSize: 12, color: T.muted }}>
+                Team: <b style={{ color: totalAttPct >= 100 ? T.up : totalAttPct >= 80 ? T.warn : T.down }}>{totalAttPct.toFixed(0)}%</b>
+                {" · "}{money(totalWon)} / {money(totalGoal)}
+              </span>
+            )}
+          </div>
+          <div className="tape">
+            {meta.managers.map((m) => {
+              const c = week.calls[m] || {};
+              const goal = c.goal || 0;
+              const won = c.closedWon || 0;
+              const pctVal = goal ? (won / goal) * 100 : null;
+              const color = pctVal == null ? T.muted : pctVal >= 100 ? T.up : pctVal >= 80 ? T.warn : T.down;
+              return (
+                <div className="mcard" key={m}>
+                  <div className="mn">{m}</div>
+                  <div className="mv mono" style={{ color }}>{pctVal == null ? "—" : pctVal.toFixed(0) + "%"}</div>
+                  <div className="mono" style={{ fontSize: 11.5, color: T.muted, marginTop: 4 }}>
+                    {money(c.closedWon)} / {money(c.goal)}
+                  </div>
+                  <div className="bar" style={{ marginTop: 8 }}>
+                    <i style={{ width: Math.min(100, pctVal || 0) + "%", background: color }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="tape" style={{ marginBottom: 18 }}>
         {meta.managers.map((m) => {
@@ -502,6 +532,7 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
         const cCommit = find(/^commit/i) || find(/commit/i);
         const cBest = find(/best/i);
         const cGoal = fields.find((f) => /goal/i.test(f) && !/attain/i.test(f)) || "";
+        const cClosedWon = find(/closed.?won|booked|won.?(?:amount|amt|\$|mtd|qtd|ytd)|actuals?|won.?to.?date/i) || fields.find((f) => /\bwon\b/i.test(f) && !/unwon|will\s*win/i.test(f)) || "";
         if (!cMgr || !cCall) { setErr("Couldn't find Manager and Most Likely columns — is this the forecast export?"); return; }
 
         const data = res.data;
@@ -517,7 +548,10 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
           managers.push(name);
           calls[name] = {
             call: moneyNum(r[cCall]), commit: cCommit ? moneyNum(r[cCommit]) : null,
-            best: cBest ? moneyNum(r[cBest]) : null, note: "", prior: null,
+            best: cBest ? moneyNum(r[cBest]) : null,
+            goal: cGoal ? moneyNum(r[cGoal]) : null,
+            closedWon: cClosedWon ? moneyNum(r[cClosedWon]) : null,
+            note: "", prior: null,
           };
         });
         if (!managers.length) { setErr("No manager rows detected in that file."); return; }
@@ -529,7 +563,11 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
           return w;
         });
         saveMeta({ ...meta, managers });
-        setDone(`Loaded ${managers.length} managers${planTotal != null ? " · plan " + money(planTotal) : ""}.`);
+        const parts = [`${managers.length} managers`];
+        if (planTotal != null) parts.push("plan " + money(planTotal));
+        if (cClosedWon) parts.push("closed-won from “" + cClosedWon + "”");
+        else parts.push("no closed-won column detected");
+        setDone("Loaded " + parts.join(" · ") + ".");
       },
       error: () => setErr("Couldn't read that file."),
     });
@@ -622,76 +660,106 @@ function Headlines({ week, meta, updateWeek }) {
 }
 
 /* ============================== TIPS ============================== */
-function Tips({ week, updateWeek }) {
-  const [paste, setPaste] = useState("");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
+const TIP_STATUSES = [
+  { key: "not_tried", label: "Not tried", color: "#8B98A5", bg: "rgba(139,152,165,.12)" },
+  { key: "in_progress", label: "In progress", color: "#D6A126", bg: "rgba(214,161,38,.15)" },
+  { key: "unsuccessful", label: "Unsuccessful", color: "#F85149", bg: "rgba(248,81,73,.15)" },
+  { key: "successful", label: "Successful", color: "#3FB950", bg: "rgba(63,185,80,.15)" },
+];
+const tipStatus = (s) => TIP_STATUSES.find((x) => x.key === s) || TIP_STATUSES[0];
 
-  const toggle = (id) => updateWeek((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, included: !t.included } : t); return w; });
+function Tips({ meta, week, updateWeek }) {
+  const addFor = (owner) => updateWeek((w) => {
+    w.tips.push({ id: uid(), source: "Manual", text: "", included: false, owner, status: "not_tried" });
+    return w;
+  });
   const del = (id) => updateWeek((w) => { w.tips = w.tips.filter((t) => t.id !== id); return w; });
-  const addManual = () => updateWeek((w) => { w.tips.push({ id: uid(), source: "Other", text: "", included: false }); return w; });
   const editText = (id, v) => updateWeek((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, text: v } : t); return w; });
+  const setStatus = (id, s) => updateWeek((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, status: s } : t); return w; });
+  const setOwner = (id, o) => updateWeek((w) => { w.tips = w.tips.map((t) => t.id === id ? { ...t, owner: o } : t); return w; });
 
-  async function suggest() {
-    if (!paste.trim()) { setErr("Paste some Slack wins or Gong notes first."); return; }
-    setBusy(true); setErr("");
-    try {
-      const res = await fetch(AI_ENDPOINT, {
-        method: "POST", headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-6", max_tokens: 1000,
-          messages: [{
-            role: "user", content:
-              `You help a sales leader prep the weekly forecast meeting. From the Slack wins and Gong call notes below, extract 1-3 concrete, repeatable pipeline-generation tips the team can reuse next week — e.g. a talk track that opened a door, or a win worth modeling. Be specific and actionable.\n\nReturn ONLY a JSON array, no markdown, each item {"source":"Slack"|"Gong"|"Other","text":"..."}.\n\nINPUT:\n${paste}`
-          }],
-        }),
-      });
-      const data = await res.json();
-      const txt = (data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n");
-      const clean = txt.replace(/```json|```/g, "").trim();
-      const arr = JSON.parse(clean);
-      updateWeek((w) => { arr.slice(0, 3).forEach((t) => w.tips.push({ id: uid(), source: t.source || "Other", text: t.text, included: false })); return w; });
-      setPaste("");
-    } catch (e) { setErr("Couldn't generate suggestions. In Claude this works out of the box; running standalone, set AI_ENDPOINT to your API proxy (see README). Manual add still works."); }
-    setBusy(false);
-  }
+  // Bucket tips by owner; tips missing an owner or pointing at a removed manager land in "Unassigned".
+  const buckets = {};
+  meta.managers.forEach((m) => { buckets[m] = []; });
+  const unassigned = [];
+  week.tips.forEach((t) => {
+    if (t.owner && buckets[t.owner]) buckets[t.owner].push(t);
+    else unassigned.push(t);
+  });
 
-  const incCount = week.tips.filter((t) => t.included).length;
+  const tipRow = (t) => {
+    const s = tipStatus(t.status);
+    return (
+      <div key={t.id} className="row" style={{ gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid " + T.panel2 }}>
+        <textarea style={{ flex: 1, minHeight: 32, resize: "vertical", border: "1px solid " + T.line, borderRadius: 7, padding: "6px 8px", fontSize: 13 }}
+          value={t.text} placeholder="What are they trying? (e.g. cold-call walk-ins, ABM sequence with CFO, etc.)"
+          onChange={(e) => editText(t.id, e.target.value)} />
+        <div className="seg" style={{ flexShrink: 0 }}>
+          {TIP_STATUSES.map((opt) => (
+            <button key={opt.key} className={t.status === opt.key ? "on" : ""}
+              style={t.status === opt.key ? { background: opt.color, color: "#06141d" } : { color: opt.color }}
+              onClick={() => setStatus(t.id, opt.key)}>{opt.label}</button>
+          ))}
+        </div>
+        <button className="ico" onClick={() => del(t.id)} title="Delete"><Trash2 size={15} /></button>
+      </div>
+    );
+  };
+
+  const statusCount = (k) => week.tips.filter((t) => (t.status || "not_tried") === k).length;
+
   return (
     <>
       <h2>Pipeline generation tips</h2>
-      <p className="sub">Suggested wins and talk tracks to share with the team. Check the ones to include in this week's update; uncheck or delete the rest. Until Gong and Slack are connected live, paste recent wins or call notes and let the assistant draft suggestions.</p>
+      <p className="sub">Each manager logs the tactics they're trying to generate pipeline. Mark progress with the status pill — these carry forward each week so we can see what's working over time.</p>
 
-      <div className="card" style={{ marginBottom: 16 }}>
-        <div className="row" style={{ marginBottom: 10 }}><Sparkles size={16} style={{ color: T.accent }} /><b style={{ fontSize: 14 }}>Draft from Slack / Gong</b></div>
-        <textarea style={{ width: "100%", minHeight: 96, resize: "vertical", marginBottom: 10 }}
-          value={paste} placeholder="Paste recent Slack wins, closed-won notes, or Gong call snippets here…"
-          onChange={(e) => setPaste(e.target.value)} />
-        <div className="row">
-          <button className="btn pri sm" onClick={suggest} disabled={busy}><Sparkles size={14} />{busy ? "Drafting…" : "Suggest tips"}</button>
-          <button className="btn gho sm" onClick={addManual}><Plus size={14} />Add manually</button>
-          {err && <span style={{ fontSize: 12, color: T.down }}>{err}</span>}
-        </div>
+      <div className="row" style={{ flexWrap: "wrap", gap: 8, marginBottom: 16, fontSize: 12, color: T.muted }}>
+        <b style={{ color: T.text }}>{week.tips.length} tactic{week.tips.length !== 1 ? "s" : ""} tracked</b>
+        {TIP_STATUSES.map((s) => (
+          <span key={s.key} className="tag" style={{ background: s.bg, color: s.color }}>{statusCount(s.key)} {s.label.toLowerCase()}</span>
+        ))}
       </div>
 
-      <div className="between" style={{ marginBottom: 10 }}>
-        <b style={{ fontSize: 13, color: T.muted }}>{week.tips.length} suggestion{week.tips.length !== 1 ? "s" : ""}</b>
-        <span className="tag" style={{ background: "rgba(63,185,80,.15)", color: T.up }}>{incCount} selected for update</span>
-      </div>
+      <div className="grid" style={{ gap: 14 }}>
+        {meta.managers.map((m) => (
+          <div className="card" key={m}>
+            <div className="between" style={{ marginBottom: 4 }}>
+              <b style={{ fontSize: 14 }}>{m}</b>
+              <button className="btn gho sm" onClick={() => addFor(m)}><Plus size={14} />Add tactic</button>
+            </div>
+            {buckets[m].length === 0
+              ? <div style={{ fontSize: 12.5, color: T.faint, padding: "8px 0" }}>No tactics yet — add what they're trying this week.</div>
+              : buckets[m].map(tipRow)}
+          </div>
+        ))}
 
-      {week.tips.length === 0 ? <div className="empty"><b>No tips yet</b>Draft some from your wins above, or add one manually.</div> :
-        <div className="grid" style={{ gap: 9 }}>
-          {week.tips.map((t) => (
-            <div className={"tip" + (t.included ? " inc" : "")} key={t.id}>
-              <button className={"chk" + (t.included ? " on" : "")} onClick={() => toggle(t.id)}>{t.included && <Check size={14} />}</button>
-              <div style={{ flex: 1 }}>
-                <textarea style={{ width: "100%", minHeight: 38, resize: "vertical", border: "none", padding: 0, background: "transparent" }}
+        {unassigned.length > 0 && (
+          <div className="card">
+            <div className="between" style={{ marginBottom: 4 }}>
+              <b style={{ fontSize: 14, color: T.warn }}>Unassigned</b>
+              <span style={{ fontSize: 12, color: T.muted }}>{unassigned.length} tactic{unassigned.length !== 1 ? "s" : ""} — pick a manager below</span>
+            </div>
+            {unassigned.map((t) => (
+              <div key={t.id} className="row" style={{ gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid " + T.panel2 }}>
+                <select style={{ flexShrink: 0, width: 140 }} value={t.owner || ""} onChange={(e) => setOwner(t.id, e.target.value)}>
+                  <option value="">— pick owner —</option>
+                  {meta.managers.map((mm) => <option key={mm} value={mm}>{mm}</option>)}
+                </select>
+                <textarea style={{ flex: 1, minHeight: 32, resize: "vertical", border: "1px solid " + T.line, borderRadius: 7, padding: "6px 8px", fontSize: 13 }}
                   value={t.text} onChange={(e) => editText(t.id, e.target.value)} />
+                <div className="seg" style={{ flexShrink: 0 }}>
+                  {TIP_STATUSES.map((opt) => (
+                    <button key={opt.key} className={t.status === opt.key ? "on" : ""}
+                      style={t.status === opt.key ? { background: opt.color, color: "#06141d" } : { color: opt.color }}
+                      onClick={() => setStatus(t.id, opt.key)}>{opt.label}</button>
+                  ))}
+                </div>
+                <button className="ico" onClick={() => del(t.id)}><Trash2 size={15} /></button>
               </div>
-              <span className="src">{t.source}</span>
-              <button className="ico" onClick={() => del(t.id)}><X size={15} /></button>
-            </div>))}
-        </div>}
+            ))}
+          </div>
+        )}
+      </div>
     </>
   );
 }
@@ -990,10 +1058,15 @@ function Update({ meta, week, totalCall, totalCommit, netSwing, flagged }) {
       L.push(``); L.push(`HEADLINES`);
       week.headlines.forEach((h) => L.push(`• ${h.account} (${h.owner}): ${h.note}`));
     }
-    const tips = week.tips.filter((t) => t.included);
-    if (tips.length) {
-      L.push(``); L.push(`PIPELINE GENERATION TIPS`);
-      tips.forEach((t) => L.push(`• [${t.source}] ${t.text}`));
+    const activeTips = week.tips.filter((t) => t.text && (t.status || "not_tried") !== "not_tried");
+    if (activeTips.length) {
+      L.push(``); L.push(`PIPELINE GENERATION TACTICS`);
+      meta.managers.forEach((m) => {
+        const mine = activeTips.filter((t) => t.owner === m);
+        if (!mine.length) return;
+        L.push(`${m}:`);
+        mine.forEach((t) => L.push(`  • [${tipStatus(t.status).label}] ${t.text}`));
+      });
     }
     if (flagged.length) {
       L.push(``); L.push(`TRENDING BEHIND`);
