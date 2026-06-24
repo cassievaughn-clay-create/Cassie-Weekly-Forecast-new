@@ -767,7 +767,16 @@ function Importer({ meta, updateWeek }) {
   const [fileName, setFileName] = useState("");
   const [showPaste, setShowPaste] = useState(false);
   const [bulk, setBulk] = useState("");
+  const [topN, setTopN] = useState(20);
   const inputRef = useRef(null);
+
+  // Rank only the accounts that breach the behind rule, worst-first, capped at topN.
+  // Worst = smallest pacing values; treat a missing milestone as 100% (not worse).
+  function rankBehind(list) {
+    const t = meta.thresholds;
+    const deficit = (r) => (r.day180 == null ? 100 : r.day180) + (r.day270 == null ? 100 : r.day270);
+    return list.filter((r) => flag(r, t)).sort((a, b) => deficit(a) - deficit(b)).slice(0, topN);
+  }
 
   const pctNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : n; };
 
@@ -827,9 +836,11 @@ function Importer({ meta, updateWeek }) {
 
   function doImport() {
     if (!map.account) { setErr("Tell me which column is the account name first."); return; }
-    const built = build();
-    if (!built.length) { setErr("No rows landed — double-check the account column."); return; }
-    updateWeek((w) => { w.trending = mode === "replace" ? built : [...w.trending, ...built]; return w; });
+    const all = build();
+    if (!all.length) { setErr("No rows landed — double-check the account column."); return; }
+    const top = rankBehind(all);
+    if (!top.length) { setErr(`None of the ${all.length} rows breach the behind rule (Day 180 < ${meta.thresholds.d180}% ${meta.thresholds.mode === "and" ? "and" : "or"} Day 270 < ${meta.thresholds.d270}%). Loosen the rule in Settings if needed.`); return; }
+    updateWeek((w) => { w.trending = mode === "replace" ? top : [...w.trending, ...top]; return w; });
     reset();
   }
   function reset() { setRows(null); setHeaders([]); setFileName(""); setErr(""); }
@@ -838,7 +849,9 @@ function Importer({ meta, updateWeek }) {
     const lines = bulk.trim().split("\n").map((l) => l.split(/[\t,]/).map((x) => x.trim())).filter((r) => r[0]);
     if (!lines.length) { setErr("Nothing to import."); return; }
     const built = lines.map((r) => ({ id: uid(), account: r[0], owner: r[1] || meta.managers[0] || "", day180: pctNum(r[2]), day270: pctNum(r[3]) }));
-    updateWeek((w) => { w.trending = mode === "replace" ? built : [...w.trending, ...built]; return w; });
+    const top = rankBehind(built);
+    if (!top.length) { setErr(`None of the ${built.length} rows breach the behind rule (Day 180 < ${meta.thresholds.d180}% ${meta.thresholds.mode === "and" ? "and" : "or"} Day 270 < ${meta.thresholds.d270}%).`); return; }
+    updateWeek((w) => { w.trending = mode === "replace" ? top : [...w.trending, ...top]; return w; });
     setBulk(""); setErr("");
   }
 
@@ -869,12 +882,18 @@ function Importer({ meta, updateWeek }) {
 
       {!showPaste && rows && (
         <>
-          <div className="row between" style={{ marginBottom: 4 }}>
-            <span style={{ fontSize: 12.5, color: T.muted }}>
-              <span className="mono" style={{ color: T.text }}>{fileName}</span> · {rows.length} row{rows.length !== 1 ? "s" : ""} · matched columns shown below
-            </span>
-            <button className="btn gho sm" onClick={reset}>Choose another file</button>
-          </div>
+          {(() => {
+            const all = build();
+            const behind = all.filter((r) => flag(r, meta.thresholds));
+            return (
+              <div className="row between" style={{ marginBottom: 4 }}>
+                <span style={{ fontSize: 12.5, color: T.muted }}>
+                  <span className="mono" style={{ color: T.text }}>{fileName}</span> · {rows.length} row{rows.length !== 1 ? "s" : ""} · <b style={{ color: T.down }}>{behind.length}</b> behind plan · matched columns shown below
+                </span>
+                <button className="btn gho sm" onClick={reset}>Choose another file</button>
+              </div>
+            );
+          })()}
           <div className="map">
             {TARGETS.map(([k, label]) => (
               <label key={k}>{label}{k === "account" && " *"}
@@ -900,7 +919,7 @@ function Importer({ meta, updateWeek }) {
             <table className="prev">
               <thead><tr>{TARGETS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
               <tbody>
-                {build().slice(0, 5).map((r) => (
+                {rankBehind(build()).slice(0, 5).map((r) => (
                   <tr key={r.id}>
                     <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
                     <td>{r.owner}</td>
@@ -911,15 +930,20 @@ function Importer({ meta, updateWeek }) {
             </table>
           </div>
 
-          <div className="row" style={{ flexWrap: "wrap", gap: 10 }}>
+          <div className="row" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
             <div className="seg">
               <button className={mode === "replace" ? "on" : ""} onClick={() => setMode("replace")}>Replace list</button>
               <button className={mode === "add" ? "on" : ""} onClick={() => setMode("add")}>Add to list</button>
             </div>
-            <button className="btn pri sm" onClick={doImport}><Check size={14} />Import {build().length} account{build().length !== 1 ? "s" : ""}</button>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: T.muted }}>
+              Top
+              <input type="number" min="1" max="200" value={topN} onChange={(e) => setTopN(Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 1)))} style={{ width: 60 }} />
+              behind
+            </label>
+            <button className="btn pri sm" onClick={doImport}><Check size={14} />Import top {rankBehind(build()).length} behind</button>
           </div>
           <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
-            “Replace” swaps the whole segment for this week — the right choice for a fresh weekly export. “Add” appends without clearing what's there.
+            Only accounts breaching the rule (Day 180 &lt; {meta.thresholds.d180}% {meta.thresholds.mode === "and" ? "and" : "or"} Day 270 &lt; {meta.thresholds.d270}%) come through, sorted worst-first and capped at the Top value. “Replace” swaps the whole segment for this week; “Add” appends.
           </p>
         </>
       )}
