@@ -262,6 +262,12 @@ function blankWeek(date, managers, prev) {
       renewals: (prev?.grr?.renewals || []).map((r) => ({ ...r, id: uid() })),
       image: null, imageName: "",
     },
+    uploads: {
+      forecast: { uploaded: false, filename: "", ts: null },
+      grr: { uploaded: false, filename: "", ts: null },
+      trending: { uploaded: false, filename: "", ts: null },
+      renewals: { uploaded: false, filename: "", ts: null },
+    },
   };
 }
 
@@ -276,7 +282,7 @@ export default function App() {
     (async () => {
       let m = await sget("meta");
       if (!m) {
-        const managers = ["Rachel", "Michaela", "Emma", "Sammi", "Gabby", "Suchita", "Eli"];
+        const managers = ["Rachel", "Michaela", "Emma", "Sammi", "Gabby", "Suchita", "Eli Cornette"];
         const d = thisMonday();
         m = { activeWeek: d, weeks: [d], managers,
           thresholds: { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" } };
@@ -291,10 +297,36 @@ export default function App() {
       // Backfill thresholds for users with older saved state
       const defaults = { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" };
       const merged = { ...defaults, ...(m.thresholds || {}) };
+      let metaChanged = false;
       if (JSON.stringify(merged) !== JSON.stringify(m.thresholds)) {
         m = { ...m, thresholds: merged };
-        await sset("meta", m);
+        metaChanged = true;
       }
+      // Ensure Eli Cornette is in the managers list. Rename a bare "Eli" if present; otherwise append.
+      if (m.managers && !m.managers.includes("Eli Cornette")) {
+        if (m.managers.includes("Eli")) {
+          m = { ...m, managers: m.managers.map((x) => x === "Eli" ? "Eli Cornette" : x) };
+        } else if (!m.managers.some((x) => /eli\s*cornette/i.test(x))) {
+          m = { ...m, managers: [...m.managers, "Eli Cornette"] };
+        }
+        metaChanged = true;
+      }
+      if (metaChanged) await sset("meta", m);
+      // Backfill the per-week uploads checklist for weeks saved before this field existed.
+      setWeeks((prev) => {
+        const out = { ...prev };
+        let dirty = false;
+        for (const k of Object.keys(out)) {
+          const w = out[k];
+          if (!w.uploads) {
+            const blank = { forecast: { uploaded: false, filename: "", ts: null }, grr: { uploaded: false, filename: "", ts: null }, trending: { uploaded: false, filename: "", ts: null }, renewals: { uploaded: false, filename: "", ts: null } };
+            out[k] = { ...w, uploads: blank };
+            sset("week:" + w.id, out[k]);
+            dirty = true;
+          }
+        }
+        return dirty ? out : prev;
+      });
       setMeta(m); setLoaded(true);
     })();
   }, []);
@@ -385,7 +417,7 @@ export default function App() {
 
           {/* MAIN */}
           <div className="main" key={tab + meta.activeWeek}>
-            {tab === "overview" && <Overview {...{ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwing, flagged }} />}
+            {tab === "overview" && <Overview {...{ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwing, flagged, setTab }} />}
             {tab === "calls" && <Calls {...{ meta, week, prevWeek, updateWeek, saveMeta, totalCall }} />}
             {tab === "swings" && <Swings {...{ week, meta, updateWeek }} />}
             {tab === "tips" && <Tips {...{ meta, week, updateWeek }} />}
@@ -441,7 +473,51 @@ function flagAhead(r, t) {
 }
 
 /* ============================== OVERVIEW ============================== */
-function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwing, flagged }) {
+const UPLOAD_LIST = [
+  { key: "forecast", label: "Forecast CSV", tab: "calls", hint: "Manager Calls" },
+  { key: "grr", label: "GRR CSV (ARR Due + Closed Won)", tab: "grr", hint: "GRR Attainment" },
+  { key: "trending", label: "Trending pacing CSV", tab: "trending", hint: "Trending Behind" },
+  { key: "renewals", label: "Upcoming renewals CSV", tab: "grr", hint: "GRR Attainment" },
+];
+
+function UploadChecklist({ week, setTab }) {
+  const u = week.uploads || {};
+  const done = UPLOAD_LIST.filter((x) => u[x.key]?.uploaded).length;
+  return (
+    <div className="card" style={{ marginBottom: 18 }}>
+      <div className="between" style={{ marginBottom: 10 }}>
+        <b style={{ fontSize: 14 }}>This week's CSV checklist</b>
+        <span className="mono" style={{ fontSize: 12, color: done === UPLOAD_LIST.length ? T.up : T.muted }}>{done} / {UPLOAD_LIST.length} uploaded</span>
+      </div>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 10 }}>
+        {UPLOAD_LIST.map(({ key, label, tab, hint }) => {
+          const entry = u[key];
+          const uploaded = !!entry?.uploaded;
+          return (
+            <button key={key} onClick={() => setTab(tab)}
+              className="row"
+              style={{ gap: 10, padding: "10px 12px", background: T.panel2, borderRadius: 8, border: "1px solid " + (uploaded ? "rgba(63,185,80,.35)" : T.line), textAlign: "left", cursor: "pointer", color: T.text }}
+              title={`Go to ${hint}`}>
+              <div style={{ width: 22, height: 22, borderRadius: "50%", background: uploaded ? T.up : T.panel, border: "1px solid " + (uploaded ? T.up : T.line), display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                {uploaded ? <Check size={14} style={{ color: "#06141d" }} /> : <X size={14} style={{ color: T.faint }} />}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 500 }}>{label}</div>
+                <div style={{ fontSize: 11, color: uploaded ? T.muted : T.faint, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {uploaded
+                    ? <><span className="mono">{entry.filename || "uploaded"}</span>{entry.ts && <> · {new Date(entry.ts).toLocaleDateString("en-US", { month: "short", day: "numeric" })}</>}</>
+                    : <>Not uploaded yet · go to {hint}</>}
+                </div>
+              </div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwing, flagged, setTab }) {
   const series = [...meta.weeks].sort().map((d) => {
     const w = weeks[d]; if (!w) return null;
     const call = meta.managers.reduce((s, m) => s + (w.calls[m]?.call || 0), 0);
@@ -460,6 +536,8 @@ function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwin
     <>
       <h2>This week at a glance</h2>
       <p className="sub">Live snapshot for the meeting on {fmtDate(week.date)}. Everything here is captured against this week and kept as you move forward.</p>
+
+      <UploadChecklist week={week} setTab={setTab} />
 
       {hasAttainment && (
         <div className="card" style={{ marginBottom: 18 }}>
@@ -691,11 +769,18 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
             calls[m].prior = ex?.prior ?? ex?.call ?? null;
             if (ex?.note) calls[m].note = ex.note;
           });
+          // Merge: keep existing call data for managers who aren't in this CSV (e.g. Eli Cornette).
+          for (const m of Object.keys(w.calls || {})) {
+            if (!calls[m]) calls[m] = w.calls[m];
+          }
           w.calls = calls;
           if (planTotal != null) w.plan = planTotal;
+          w.uploads = { ...(w.uploads || {}), forecast: { uploaded: true, filename: file.name, ts: new Date().toISOString() } };
           return w;
         });
-        saveMeta({ ...meta, managers });
+        // Preserve managers already in meta that weren't in this CSV.
+        const mergedManagers = [...managers, ...meta.managers.filter((m) => !managers.includes(m))];
+        saveMeta({ ...meta, managers: mergedManagers });
         const parts = [`${managers.length} managers`];
         if (planTotal != null) parts.push("plan " + money(planTotal));
         if (cClosedWon) parts.push("closed-won from “" + cClosedWon + "”");
@@ -1164,6 +1249,7 @@ function Importer({ meta, updateWeek }) {
         return prev?.actionPlan ? { ...r, actionPlan: prev.actionPlan } : r;
       });
       w.trending = mode === "replace" ? incoming : [...w.trending, ...incoming];
+      w.uploads = { ...(w.uploads || {}), trending: { uploaded: true, filename: fileName, ts: new Date().toISOString() } };
       return w;
     });
     reset();
@@ -1452,6 +1538,7 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
             return old ? { ...r, grrCall: old.grrCall, notes: old.notes } : r;
           });
           w.grr.rows = enriched;
+          w.uploads = { ...(w.uploads || {}), grr: { uploaded: true, filename: file.name, ts: new Date().toISOString() } };
           return w;
         });
         setCsvDone(`Loaded ${built.length} manager${built.length !== 1 ? "s" : ""} from ${file.name}.`);
@@ -1663,6 +1750,7 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
         meta={meta}
         renewals={renewals}
         weekDate={week.date}
+        updateWeek={updateWeek}
         addRenewal={addRenewal}
         updRenewal={updRenewal}
         updRenewalNum={updRenewalNum}
@@ -1672,7 +1760,83 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
   );
 }
 
-function RenewalsSection({ meta, renewals, weekDate, addRenewal, updRenewal, updRenewalNum, delRenewal }) {
+function RenewalsImporter({ meta, updateWeek }) {
+  const [over, setOver] = useState(false);
+  const [err, setErr] = useState("");
+  const [done, setDone] = useState("");
+  const [fileName, setFileName] = useState("");
+  const ref = useRef(null);
+
+  const moneyNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n * 100) / 100; };
+  const toIso = (v) => {
+    if (!v) return "";
+    const s = String(v).trim();
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+    const d = new Date(s);
+    if (isNaN(d.getTime())) return "";
+    return d.toISOString().slice(0, 10);
+  };
+
+  function handleFile(file) {
+    setErr(""); setDone("");
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { setErr("That's not a .csv."); return; }
+    setFileName(file.name);
+    Papa.parse(file, {
+      header: true, skipEmptyLines: true,
+      complete: (res) => {
+        const fields = (res.meta.fields || []).filter(Boolean);
+        const data = res.data || [];
+        const find = (re) => fields.find((f) => re.test(f)) || null;
+        const cAccount = find(/account|customer|company|client|opportunity|name/i);
+        const cManager = find(/manager|owner|csm|ae|\brep\b/i);
+        const cAmount = find(/(?:^|\b)(?:amount|amt|arr|tcv|acv|value|contract\s*value|renewal\s*value)\b/i);
+        const cDate = find(/close[\s_-]*date|renewal[\s_-]*date|due[\s_-]*date|expir(?:e|ation)|end[\s_-]*date|\bclose\b|\bdate\b/i);
+        if (!cAccount || !cDate) { setErr(`Couldn't find Account and Close Date columns. Headers seen: ${fields.join(", ")}`); return; }
+
+        const built = data.map((r) => ({
+          id: uid(),
+          account: String(r[cAccount] ?? "").trim(),
+          manager: String((cManager && r[cManager]) || meta.managers[0] || "").trim(),
+          amount: cAmount ? moneyNum(r[cAmount]) : null,
+          closeDate: toIso(r[cDate]),
+        })).filter((x) => x.account && x.closeDate);
+
+        if (!built.length) { setErr("No renewals with both an account and a parseable close date."); return; }
+        updateWeek((w) => {
+          if (!w.grr) w.grr = { rows: [], renewals: [], image: null, imageName: "" };
+          w.grr.renewals = built;
+          w.uploads = { ...(w.uploads || {}), renewals: { uploaded: true, filename: file.name, ts: new Date().toISOString() } };
+          return w;
+        });
+        setDone(`Imported ${built.length} renewal${built.length !== 1 ? "s" : ""} from “${cAccount}” + “${cDate}”${cAmount ? ` (+ amount from “${cAmount}”)` : ""}.`);
+      },
+      error: () => setErr("Couldn't read that file."),
+    });
+  }
+
+  const onDrop = (e) => { e.preventDefault(); setOver(false); handleFile(e.dataTransfer.files?.[0]); };
+
+  return (
+    <div className={"drop" + (over ? " over" : "")} role="button" tabIndex={0}
+      onClick={() => ref.current?.click()}
+      onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && ref.current?.click()}
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+      onDragLeave={() => setOver(false)} onDrop={onDrop}
+      style={{ padding: "14px 18px", marginBottom: 12 }}>
+      <div className="row" style={{ justifyContent: "center", gap: 9 }}>
+        <FileText size={18} style={{ color: T.accent }} />
+        <b style={{ fontSize: 13.5 }}>Drop the upcoming-renewals CSV</b>
+        <span style={{ fontSize: 12, color: T.muted }}>— needs Account + Close Date columns; Manager and Amount auto-detected if present</span>
+      </div>
+      {fileName && !err && done && <div style={{ fontSize: 12, color: T.up, marginTop: 7 }}>{done}</div>}
+      {err && <div style={{ fontSize: 12, color: T.down, marginTop: 7 }}>{err}</div>}
+      <input ref={ref} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0])} />
+    </div>
+  );
+}
+
+function RenewalsSection({ meta, renewals, weekDate, updateWeek, addRenewal, updRenewal, updRenewalNum, delRenewal }) {
   const [showAll, setShowAll] = useState(false);
   // Anchor "today" to the week's meeting date for predictability across weeks.
   const anchor = new Date(weekDate + "T00:00:00");
@@ -1705,6 +1869,8 @@ function RenewalsSection({ meta, renewals, weekDate, addRenewal, updRenewal, upd
           <button className={showAll ? "on" : ""} onClick={() => setShowAll(true)}>All ({renewals.length})</button>
         </div>
       </div>
+
+      <RenewalsImporter meta={meta} updateWeek={updateWeek} />
 
       <div className="card" style={{ padding: 0 }}>
         {shown.length === 0
