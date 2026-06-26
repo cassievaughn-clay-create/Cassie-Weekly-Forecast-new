@@ -200,7 +200,7 @@ function blankWeek(date, managers, prev) {
   managers.forEach((m) => {
     const p = prev?.calls?.[m];
     calls[m] = {
-      call: p?.call ?? null, commit: p?.commit ?? null, best: p?.best ?? null,
+      call: null, commit: p?.commit ?? null, best: p?.best ?? null,
       goal: p?.goal ?? null, closedWon: p?.closedWon ?? null,
       note: "", prior: p?.call ?? null,
     };
@@ -424,7 +424,10 @@ function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwin
           return (
             <div className="mcard" key={m}>
               <div className="mn">{m}</div>
-              <div className="mv mono">{money(c.call)}</div>
+              <div className="mv mono">{c.call == null ? <span style={{ color: T.faint }}>—</span> : money(c.call)}</div>
+              <div className="mono" style={{ fontSize: 11, color: T.muted, marginTop: 4 }}>
+                Last: {prior == null ? "—" : money(prior)}
+              </div>
               {d != null && d !== 0 && (
                 <div className="delta mono" style={{ color: d > 0 ? T.up : T.down }}>
                   {d > 0 ? <ChevronUp size={14} /> : <ChevronDown size={14} />}{money(Math.abs(d))} WoW
@@ -495,8 +498,13 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
       <div className="card" style={{ padding: 0, marginTop: 16 }}>
         <table>
           <thead><tr>
-            <th>Manager</th><th style={{ textAlign: "right" }}>Commit</th><th style={{ textAlign: "right" }}>Call</th>
-            <th style={{ textAlign: "right" }}>Best</th><th style={{ textAlign: "right" }}>WoW</th><th>Note</th>
+            <th>Manager</th>
+            <th style={{ textAlign: "right" }}>Last call</th>
+            <th style={{ textAlign: "right" }}>This call</th>
+            <th style={{ textAlign: "right" }}>WoW Δ</th>
+            <th style={{ textAlign: "right" }}>Commit</th>
+            <th style={{ textAlign: "right" }}>Best</th>
+            <th>Note</th>
           </tr></thead>
           <tbody>
             {meta.managers.map((m) => {
@@ -506,20 +514,24 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
               return (
                 <tr key={m}>
                   <td style={{ fontWeight: 500 }}>{m}</td>
-                  <td className="cellnum"><input type="number" value={c.commit ?? ""} placeholder="—" onChange={(e) => set(m, "commit", e.target.value)} /></td>
+                  <td className="mono" style={{ textAlign: "right", color: prior == null ? T.faint : T.muted, paddingRight: 19 }}>
+                    {prior == null ? "—" : money(prior)}
+                  </td>
                   <td className="cellnum"><input type="number" value={c.call ?? ""} placeholder="—" onChange={(e) => set(m, "call", e.target.value)} /></td>
-                  <td className="cellnum"><input type="number" value={c.best ?? ""} placeholder="—" onChange={(e) => set(m, "best", e.target.value)} /></td>
-                  <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted }}>
+                  <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted, paddingRight: 19 }}>
                     {d == null ? "—" : (d === 0 ? "flat" : (d > 0 ? "+" : "−") + money(Math.abs(d)))}
                   </td>
+                  <td className="cellnum"><input type="number" value={c.commit ?? ""} placeholder="—" onChange={(e) => set(m, "commit", e.target.value)} /></td>
+                  <td className="cellnum"><input type="number" value={c.best ?? ""} placeholder="—" onChange={(e) => set(m, "best", e.target.value)} /></td>
                   <td><input value={c.note || ""} placeholder="add context…" onChange={(e) => set(m, "note", e.target.value)} /></td>
                 </tr>);
             })}
           </tbody>
           <tfoot><tr>
-            <td style={{ fontWeight: 600 }}>Total</td><td></td>
+            <td style={{ fontWeight: 600 }}>Total</td>
+            <td></td>
             <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: T.accent, paddingRight: 19 }}>{money(totalCall)}</td>
-            <td colSpan={3}></td>
+            <td colSpan={4}></td>
           </tr></tfoot>
         </table>
       </div>
@@ -577,7 +589,12 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
         if (!managers.length) { setErr("No manager rows detected in that file."); return; }
 
         updateWeek((w) => {
-          managers.forEach((m) => { const ex = w.calls[m]; calls[m].prior = ex?.call ?? null; if (ex?.note) calls[m].note = ex.note; });
+          managers.forEach((m) => {
+            const ex = w.calls[m];
+            // Preserve last-week's call (set when the week was created via blankWeek). If absent, fall back to whatever call value was already there.
+            calls[m].prior = ex?.prior ?? ex?.call ?? null;
+            if (ex?.note) calls[m].note = ex.note;
+          });
           w.calls = calls;
           if (planTotal != null) w.plan = planTotal;
           return w;
