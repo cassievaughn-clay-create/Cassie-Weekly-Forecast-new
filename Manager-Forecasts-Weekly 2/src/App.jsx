@@ -6,7 +6,7 @@ import {
 import {
   LayoutDashboard, Users, ArrowUpDown, Megaphone, Lightbulb, TrendingDown, TrendingUp,
   FileText, Settings as SettingsIcon, Plus, Trash2, Check, X, Copy, Sparkles,
-  ChevronUp, ChevronDown, AlertTriangle,
+  ChevronUp, ChevronDown, AlertTriangle, Target, Image as ImageIcon,
 } from "lucide-react";
 
 /* ------------------------------------------------------------------ *
@@ -191,6 +191,7 @@ const NAV = [
   ["tips", "Pipeline Tips", Lightbulb],
   ["trending", "Trending Behind", TrendingDown],
   ["ahead", "Trending Ahead", TrendingUp],
+  ["grr", "GRR Attainment", Target],
   ["update", "Weekly Update", FileText],
   ["settings", "Settings", SettingsIcon],
 ];
@@ -213,6 +214,10 @@ function blankWeek(date, managers, prev) {
     headlines: (prev?.headlines || []).map((h) => ({ ...h, id: uid() })),
     tips: (prev?.tips || []).map((t) => ({ ...t, id: uid() })),
     trending: (prev?.trending || []).map((t) => ({ ...t, id: uid() })),
+    grr: {
+      rows: (prev?.grr?.rows || []).map((r) => ({ ...r, id: uid(), grrCall: null })),
+      image: null, imageName: "",
+    },
   };
 }
 
@@ -334,6 +339,7 @@ export default function App() {
             {tab === "tips" && <Tips {...{ meta, week, updateWeek }} />}
             {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "behind" }} />}
             {tab === "ahead" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "ahead" }} />}
+            {tab === "grr" && <Grr {...{ week, meta, prevWeek, updateWeek }} />}
             {tab === "update" && <Update {...{ meta, week, totalCall, totalCommit, netSwing, flagged, flaggedAhead }} />}
             {tab === "settings" && <SettingsTab {...{ meta, saveMeta, updateWeek, week }} />}
           </div>
@@ -1164,6 +1170,260 @@ function Importer({ meta, updateWeek }) {
 
       {err && <p style={{ fontSize: 12, color: T.down, margin: "10px 0 0" }}>{err}</p>}
     </div>
+  );
+}
+
+/* ============================== GRR ============================== */
+function Grr({ week, meta, prevWeek, updateWeek }) {
+  const [csvErr, setCsvErr] = useState("");
+  const [csvDone, setCsvDone] = useState("");
+  const [imgErr, setImgErr] = useState("");
+  const [csvOver, setCsvOver] = useState(false);
+  const [imgOver, setImgOver] = useState(false);
+  const csvRef = useRef(null);
+  const imgRef = useRef(null);
+
+  const grr = week.grr || { rows: [], image: null, imageName: "" };
+  const rows = grr.rows;
+
+  const moneyNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n * 100) / 100; };
+  const isIndented = (s) => s !== s.replace(/^[\s   ]+/, "");
+
+  const updRow = (id, f, v) => updateWeek((w) => {
+    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+    w.grr.rows = (w.grr.rows || []).map((r) => r.id === id ? { ...r, [f]: (f === "goal" || f === "closedWon" || f === "grrCall") ? num(v) : v } : r);
+    return w;
+  });
+  const delRow = (id) => updateWeek((w) => {
+    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+    w.grr.rows = (w.grr.rows || []).filter((r) => r.id !== id);
+    return w;
+  });
+  const addRow = () => updateWeek((w) => {
+    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+    w.grr.rows = [...(w.grr.rows || []), { id: uid(), manager: "", segment: "", goal: null, closedWon: null, grrCall: null, notes: "" }];
+    return w;
+  });
+
+  function handleCsv(file) {
+    setCsvErr(""); setCsvDone("");
+    if (!file) return;
+    if (!/\.csv$/i.test(file.name) && file.type !== "text/csv") { setCsvErr("That's not a .csv — export and try again."); return; }
+    Papa.parse(file, {
+      header: false, skipEmptyLines: true,
+      complete: (res) => {
+        const data = (res.data || []).filter((r) => Array.isArray(r) && r.some((v) => String(v).trim()));
+        if (!data.length) { setCsvErr("File opened but had no rows."); return; }
+        // First row in this export is the header strip (",,,Closed Won,Commit,Most Likely,Best Case,..."). Skip it if col 0/1 are empty and col 3 ≈ "Closed Won".
+        let start = 0;
+        const r0 = data[0];
+        const hdr3 = String(r0?.[3] ?? "").toLowerCase();
+        if (!String(r0?.[0] ?? "").trim() && hdr3.includes("closed")) start = 1;
+
+        const built = [];
+        for (let i = start; i < data.length; i++) {
+          const row = data[i];
+          const raw = String(row[0] ?? "");
+          const name = raw.trim();
+          if (!name) continue;
+          if (/^total$/i.test(name)) continue;       // skip the team total row
+          if (isIndented(raw)) continue;             // skip rep rows
+          built.push({
+            id: uid(),
+            manager: name,
+            segment: String(row[1] ?? "").trim(),
+            goal: moneyNum(row[2]),
+            closedWon: moneyNum(row[3]),
+            grrCall: null,
+            notes: "",
+          });
+        }
+        if (!built.length) { setCsvErr("No manager rows detected in that file."); return; }
+
+        updateWeek((w) => {
+          const prevRows = (w.grr?.rows || []);
+          // Preserve grrCall + notes if the same manager+segment appears in the new file.
+          const enriched = built.map((r) => {
+            const old = prevRows.find((p) => p.manager === r.manager && (p.segment || "") === (r.segment || ""));
+            return old ? { ...r, grrCall: old.grrCall, notes: old.notes } : r;
+          });
+          w.grr = { ...(w.grr || {}), rows: enriched };
+          return w;
+        });
+        setCsvDone(`Loaded ${built.length} manager${built.length !== 1 ? "s" : ""} from ${file.name}.`);
+      },
+      error: () => setCsvErr("Couldn't read that file."),
+    });
+  }
+
+  function handleImage(file) {
+    setImgErr("");
+    if (!file) return;
+    if (!/^image\//.test(file.type)) { setImgErr("That doesn't look like an image."); return; }
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      const img = new Image();
+      img.onload = () => {
+        const maxW = 1400;
+        const scale = img.width > maxW ? maxW / img.width : 1;
+        const cw = Math.round(img.width * scale);
+        const ch = Math.round(img.height * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = cw; canvas.height = ch;
+        const ctx = canvas.getContext("2d");
+        ctx.drawImage(img, 0, 0, cw, ch);
+        const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
+        updateWeek((w) => {
+          w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+          w.grr.image = dataUrl; w.grr.imageName = file.name;
+          return w;
+        });
+      };
+      img.onerror = () => setImgErr("Couldn't decode that image.");
+      img.src = e.target.result;
+    };
+    reader.onerror = () => setImgErr("Couldn't read that file.");
+    reader.readAsDataURL(file);
+  }
+  const clearImage = () => updateWeek((w) => {
+    w.grr = { ...(w.grr || {}), image: null, imageName: "" }; return w;
+  });
+
+  const onCsvDrop = (e) => { e.preventDefault(); setCsvOver(false); handleCsv(e.dataTransfer.files?.[0]); };
+  const onImgDrop = (e) => { e.preventDefault(); setImgOver(false); handleImage(e.dataTransfer.files?.[0]); };
+
+  // Look up last week's GRR call by manager+segment.
+  const lastGrrCallFor = (r) => {
+    const pr = (prevWeek?.grr?.rows || []).find((p) => p.manager === r.manager && (p.segment || "") === (r.segment || ""));
+    return pr?.grrCall ?? null;
+  };
+
+  // Team totals
+  const totals = rows.reduce((a, r) => ({
+    closedWon: a.closedWon + (r.closedWon || 0),
+    goal: a.goal + (r.goal || 0),
+    grrCall: a.grrCall + (r.grrCall || 0),
+    lastGrrCall: a.lastGrrCall + (lastGrrCallFor(r) || 0),
+  }), { closedWon: 0, goal: 0, grrCall: 0, lastGrrCall: 0 });
+  const teamPct = totals.goal ? (totals.closedWon / totals.goal) * 100 : null;
+
+  return (
+    <>
+      <h2>GRR Attainment</h2>
+      <p className="sub">Closed Won vs Goal per manager. Drop the forecast export to populate the table, optionally attach a screenshot of the source dashboard for reference. The <b style={{ color: T.text }}>GRR Call</b> field is yours to fill each week and carries last week's number side-by-side for WoW tracking.</p>
+
+      <div className="grid" style={{ gridTemplateColumns: "1fr 1fr", marginBottom: 16 }}>
+        <div className={"drop" + (csvOver ? " over" : "")} role="button" tabIndex={0}
+          onClick={() => csvRef.current?.click()}
+          onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && csvRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setCsvOver(true); }}
+          onDragLeave={() => setCsvOver(false)} onDrop={onCsvDrop}
+          style={{ padding: "18px 20px" }}>
+          <div className="row" style={{ justifyContent: "center", gap: 9 }}>
+            <FileText size={18} style={{ color: T.accent }} />
+            <b style={{ fontSize: 13.5 }}>Drop the GRR CSV export</b>
+            <span style={{ fontSize: 12, color: T.muted }}>— per-manager rows, indented reps skipped</span>
+          </div>
+          {csvDone && <div style={{ fontSize: 12, color: T.up, marginTop: 7 }}>{csvDone}</div>}
+          {csvErr && <div style={{ fontSize: 12, color: T.down, marginTop: 7 }}>{csvErr}</div>}
+          <input ref={csvRef} type="file" accept=".csv,text/csv" style={{ display: "none" }} onChange={(e) => handleCsv(e.target.files?.[0])} />
+        </div>
+
+        <div className={"drop" + (imgOver ? " over" : "")} role="button" tabIndex={0}
+          onClick={() => imgRef.current?.click()}
+          onKeyDown={(e) => (e.key === "Enter" || e.key === " ") && imgRef.current?.click()}
+          onDragOver={(e) => { e.preventDefault(); setImgOver(true); }}
+          onDragLeave={() => setImgOver(false)} onDrop={onImgDrop}
+          style={{ padding: "18px 20px" }}>
+          <div className="row" style={{ justifyContent: "center", gap: 9 }}>
+            <ImageIcon size={18} style={{ color: T.accent }} />
+            <b style={{ fontSize: 13.5 }}>{grr.image ? "Replace screenshot" : "Drop a dashboard screenshot"}</b>
+            <span style={{ fontSize: 12, color: T.muted }}>— PNG / JPG, resized to ~1400px</span>
+          </div>
+          {imgErr && <div style={{ fontSize: 12, color: T.down, marginTop: 7 }}>{imgErr}</div>}
+          <input ref={imgRef} type="file" accept="image/*" style={{ display: "none" }} onChange={(e) => handleImage(e.target.files?.[0])} />
+        </div>
+      </div>
+
+      {grr.image && (
+        <div className="card" style={{ marginBottom: 16, padding: 12 }}>
+          <div className="between" style={{ marginBottom: 8 }}>
+            <span style={{ fontSize: 12, color: T.muted }}>Reference — <span className="mono" style={{ color: T.text }}>{grr.imageName || "screenshot"}</span></span>
+            <button className="btn gho sm" onClick={clearImage}><X size={14} />Remove</button>
+          </div>
+          <img src={grr.image} alt="GRR reference" style={{ maxWidth: "100%", borderRadius: 8, display: "block" }} />
+        </div>
+      )}
+
+      {teamPct != null && (
+        <div className="card" style={{ marginBottom: 14 }}>
+          <div className="between" style={{ marginBottom: 8 }}>
+            <b style={{ fontSize: 14 }}>Team GRR attainment (Closed Won only)</b>
+            <span className="mono" style={{ fontSize: 13, color: teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down }}>
+              <b>{teamPct.toFixed(1)}%</b> · {money(totals.closedWon)} / {money(totals.goal)}
+            </span>
+          </div>
+          <div className="bar"><i style={{ width: Math.min(100, teamPct) + "%", background: teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down }} /></div>
+        </div>
+      )}
+
+      <div className="card" style={{ padding: 0, marginBottom: 14 }}>
+        {rows.length === 0
+          ? <div style={{ padding: 18 }}><div className="empty"><b>No GRR rows yet</b>Drop the CSV above, or click Add row to enter manually.</div></div>
+          : <table>
+              <thead><tr>
+                <th>Manager</th>
+                <th>Segment</th>
+                <th style={{ textAlign: "right" }}>Closed Won</th>
+                <th style={{ textAlign: "right" }}>Goal</th>
+                <th style={{ textAlign: "right" }}>Attainment</th>
+                <th style={{ textAlign: "right" }}>Last GRR Call</th>
+                <th style={{ textAlign: "right" }}>This GRR Call</th>
+                <th style={{ textAlign: "right" }}>WoW Δ</th>
+                <th>Notes</th>
+                <th></th>
+              </tr></thead>
+              <tbody>{rows.map((r) => {
+                const pct = r.goal ? (r.closedWon || 0) / r.goal * 100 : null;
+                const color = pct == null ? T.muted : pct >= 100 ? T.up : pct >= 80 ? T.warn : T.down;
+                const last = lastGrrCallFor(r);
+                const d = r.grrCall != null && last != null ? r.grrCall - last : null;
+                return (
+                  <tr key={r.id}>
+                    <td><input value={r.manager} placeholder="manager" onChange={(e) => updRow(r.id, "manager", e.target.value)} /></td>
+                    <td><input value={r.segment || ""} placeholder="segment" onChange={(e) => updRow(r.id, "segment", e.target.value)} style={{ width: 110 }} /></td>
+                    <td className="cellnum"><input type="number" value={r.closedWon ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "closedWon", e.target.value)} /></td>
+                    <td className="cellnum"><input type="number" value={r.goal ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "goal", e.target.value)} /></td>
+                    <td className="mono" style={{ textAlign: "right", color, paddingRight: 19 }}>{pct == null ? "—" : pct.toFixed(1) + "%"}</td>
+                    <td className="mono" style={{ textAlign: "right", color: last == null ? T.faint : T.muted, paddingRight: 19 }}>{last == null ? "—" : money(last)}</td>
+                    <td className="cellnum"><input type="number" value={r.grrCall ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "grrCall", e.target.value)} /></td>
+                    <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted, paddingRight: 19 }}>
+                      {d == null ? "—" : (d === 0 ? "flat" : (d > 0 ? "+" : "−") + money(Math.abs(d)))}
+                    </td>
+                    <td><input value={r.notes || ""} placeholder="add context…" onChange={(e) => updRow(r.id, "notes", e.target.value)} /></td>
+                    <td><button className="ico" onClick={() => delRow(r.id)}><Trash2 size={15} /></button></td>
+                  </tr>
+                );
+              })}</tbody>
+              {rows.length > 0 && (
+                <tfoot><tr>
+                  <td style={{ fontWeight: 600 }}>Team</td>
+                  <td></td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{money(totals.closedWon)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{money(totals.goal)}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: teamPct == null ? T.muted : teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down, paddingRight: 19 }}>
+                    {teamPct == null ? "—" : teamPct.toFixed(1) + "%"}
+                  </td>
+                  <td className="mono" style={{ textAlign: "right", color: T.muted, paddingRight: 19 }}>{totals.lastGrrCall ? money(totals.lastGrrCall) : "—"}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: T.accent, paddingRight: 19 }}>{totals.grrCall ? money(totals.grrCall) : "—"}</td>
+                  <td colSpan={3}></td>
+                </tr></tfoot>
+              )}
+            </table>}
+      </div>
+
+      <button className="btn gho sm" onClick={addRow}><Plus size={14} />Add row</button>
+    </>
   );
 }
 
