@@ -177,6 +177,27 @@ const money = (n) => (n == null || n === "" || isNaN(n)) ? "—"
 const pct = (n) => (n == null || n === "" || isNaN(n)) ? "—" : `${Number(n).toFixed(0)}%`;
 const num = (v) => v === "" || v == null ? null : Number(v);
 const fmtDate = (d) => new Date(d + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" });
+const fmtNum = (n) => (n == null || n === "" || isNaN(n)) ? "" : Number(n).toLocaleString("en-US");
+
+// Money input that displays grouped commas while editing.
+function MoneyInput({ value, onChange, placeholder = "—", style, className }) {
+  return (
+    <input
+      type="text"
+      inputMode="numeric"
+      className={className}
+      style={style}
+      value={fmtNum(value)}
+      placeholder={placeholder}
+      onChange={(e) => {
+        const raw = e.target.value.replace(/[^0-9.\-]/g, "");
+        if (raw === "" || raw === "-") { onChange(null); return; }
+        const n = parseFloat(raw);
+        onChange(isNaN(n) ? null : n);
+      }}
+    />
+  );
+}
 
 function thisMonday() {
   const d = new Date(); const day = d.getDay(); const diff = (day === 0 ? -6 : 1) - day;
@@ -187,7 +208,6 @@ const NAV = [
   ["overview", "Overview", LayoutDashboard],
   ["calls", "Manager Calls", Users],
   ["swings", "Swings", ArrowUpDown],
-  ["headlines", "Headlines", Megaphone],
   ["tips", "Pipeline Tips", Lightbulb],
   ["trending", "Trending Behind", TrendingDown],
   ["ahead", "Trending Ahead", TrendingUp],
@@ -216,6 +236,7 @@ function blankWeek(date, managers, prev) {
     trending: (prev?.trending || []).map((t) => ({ ...t, id: uid() })),
     grr: {
       rows: (prev?.grr?.rows || []).map((r) => ({ ...r, id: uid(), grrCall: null })),
+      renewals: (prev?.grr?.renewals || []).map((r) => ({ ...r, id: uid() })),
       image: null, imageName: "",
     },
   };
@@ -335,7 +356,6 @@ export default function App() {
             {tab === "overview" && <Overview {...{ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwing, flagged }} />}
             {tab === "calls" && <Calls {...{ meta, week, prevWeek, updateWeek, saveMeta, totalCall }} />}
             {tab === "swings" && <Swings {...{ week, meta, updateWeek }} />}
-            {tab === "headlines" && <Headlines {...{ week, meta, updateWeek }} />}
             {tab === "tips" && <Tips {...{ meta, week, updateWeek }} />}
             {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "behind" }} />}
             {tab === "ahead" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "ahead" }} />}
@@ -515,15 +535,18 @@ function Overview({ meta, weeks, week, prevWeek, totalCall, totalCommit, netSwin
 
 /* ============================== CALLS ============================== */
 function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
+  const setNum = (m, field, n) => updateWeek((w) => { w.calls[m] = { ...w.calls[m], [field]: n }; return w; });
   const set = (m, field, v) => updateWeek((w) => { w.calls[m] = { ...w.calls[m], [field]: field === "note" ? v : num(v) }; return w; });
+  const totalGoal = meta.managers.reduce((s, m) => s + (week.calls[m]?.goal || 0), 0);
+  const totalPotPct = totalGoal ? (totalCall / totalGoal) * 100 : null;
   return (
     <>
       <h2>Manager calls</h2>
-      <p className="sub">Each manager's call on where they'll land. Edit weekly — the prior week's call is carried in automatically so you can see movement. Commit is the floor, Best is the ceiling. Or drop this week's forecast export to fill the whole table at once.</p>
+      <p className="sub">Each manager's call on where they'll land. Edit weekly — the prior week's call is carried in automatically so you can see movement. Commit is the floor, Best is the ceiling. Potential Attainment is this week's Call divided by Goal. Drop this week's forecast export to fill the whole table at once.</p>
 
       <ForecastImporter meta={meta} updateWeek={updateWeek} saveMeta={saveMeta} />
 
-      <div className="card" style={{ padding: 0, marginTop: 16 }}>
+      <div className="card" style={{ padding: 0, marginTop: 16, overflowX: "auto" }}>
         <table>
           <thead><tr>
             <th>Manager</th>
@@ -532,6 +555,8 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
             <th style={{ textAlign: "right" }}>WoW Δ</th>
             <th style={{ textAlign: "right" }}>Commit</th>
             <th style={{ textAlign: "right" }}>Best</th>
+            <th style={{ textAlign: "right" }}>Goal</th>
+            <th style={{ textAlign: "right" }}>Pot. Attain</th>
             <th>Note</th>
           </tr></thead>
           <tbody>
@@ -539,18 +564,24 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
               const c = week.calls[m] || {};
               const prior = prevWeek?.calls?.[m]?.call ?? c.prior;
               const d = c.call != null && prior != null ? c.call - prior : null;
+              const potPct = c.goal && c.call != null ? (c.call / c.goal) * 100 : null;
+              const potColor = potPct == null ? T.muted : potPct >= 100 ? T.up : potPct >= 80 ? T.warn : T.down;
               return (
                 <tr key={m}>
                   <td style={{ fontWeight: 500 }}>{m}</td>
                   <td className="mono" style={{ textAlign: "right", color: prior == null ? T.faint : T.muted, paddingRight: 19 }}>
                     {prior == null ? "—" : money(prior)}
                   </td>
-                  <td className="cellnum"><input type="number" value={c.call ?? ""} placeholder="—" onChange={(e) => set(m, "call", e.target.value)} /></td>
+                  <td className="cellnum"><MoneyInput value={c.call} onChange={(n) => setNum(m, "call", n)} /></td>
                   <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted, paddingRight: 19 }}>
                     {d == null ? "—" : (d === 0 ? "flat" : (d > 0 ? "+" : "−") + money(Math.abs(d)))}
                   </td>
-                  <td className="cellnum"><input type="number" value={c.commit ?? ""} placeholder="—" onChange={(e) => set(m, "commit", e.target.value)} /></td>
-                  <td className="cellnum"><input type="number" value={c.best ?? ""} placeholder="—" onChange={(e) => set(m, "best", e.target.value)} /></td>
+                  <td className="cellnum"><MoneyInput value={c.commit} onChange={(n) => setNum(m, "commit", n)} /></td>
+                  <td className="cellnum"><MoneyInput value={c.best} onChange={(n) => setNum(m, "best", n)} /></td>
+                  <td className="cellnum"><MoneyInput value={c.goal} onChange={(n) => setNum(m, "goal", n)} /></td>
+                  <td className="mono" style={{ textAlign: "right", color: potColor, paddingRight: 19 }}>
+                    {potPct == null ? "—" : potPct.toFixed(1) + "%"}
+                  </td>
                   <td><input value={c.note || ""} placeholder="add context…" onChange={(e) => set(m, "note", e.target.value)} /></td>
                 </tr>);
             })}
@@ -559,7 +590,12 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
             <td style={{ fontWeight: 600 }}>Total</td>
             <td></td>
             <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: T.accent, paddingRight: 19 }}>{money(totalCall)}</td>
-            <td colSpan={4}></td>
+            <td colSpan={3}></td>
+            <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{totalGoal ? money(totalGoal) : "—"}</td>
+            <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: totalPotPct == null ? T.muted : totalPotPct >= 100 ? T.up : totalPotPct >= 80 ? T.warn : T.down, paddingRight: 19 }}>
+              {totalPotPct == null ? "—" : totalPotPct.toFixed(1) + "%"}
+            </td>
+            <td></td>
           </tr></tfoot>
         </table>
       </div>
@@ -661,38 +697,90 @@ function ForecastImporter({ meta, updateWeek, saveMeta }) {
 
 /* ============================== SWINGS ============================== */
 function Swings({ week, meta, updateWeek }) {
-  const add = () => updateWeek((w) => { w.swings.push({ id: uid(), account: "", owner: meta.managers[0] || "", dir: "up", amount: null, note: "" }); return w; });
-  const upd = (id, f, v) => updateWeek((w) => { w.swings = w.swings.map((s) => s.id === id ? { ...s, [f]: f === "amount" ? num(v) : v } : s); return w; });
+  const add = () => updateWeek((w) => {
+    w.swings.push({
+      id: uid(), account: "", owner: meta.managers[0] || "",
+      dir: "up", amount: null,
+      type: "renewal", state: "potential",
+      note: "", nextSteps: "", dueDate: "",
+    });
+    return w;
+  });
+  const upd = (id, f, v) => updateWeek((w) => { w.swings = w.swings.map((s) => s.id === id ? { ...s, [f]: v } : s); return w; });
+  const updNum = (id, f, n) => updateWeek((w) => { w.swings = w.swings.map((s) => s.id === id ? { ...s, [f]: n } : s); return w; });
   const del = (id) => updateWeek((w) => { w.swings = w.swings.filter((s) => s.id !== id); return w; });
   const up = week.swings.filter((s) => s.dir === "up").reduce((a, s) => a + (s.amount || 0), 0);
   const dn = week.swings.filter((s) => s.dir === "down").reduce((a, s) => a + (s.amount || 0), 0);
   return (
     <>
       <h2>Swing factors</h2>
-      <p className="sub">Deals or accounts that could move the number up or down before quarter close. Net swing rolls up to the top bar.</p>
+      <p className="sub">Deals or accounts that could move the number up or down before quarter close. Tag each as a renewal or expansion, mark whether it has already happened or could still happen, and capture next steps with a due date. Net swing rolls up to the top bar.</p>
       <div className="row" style={{ gap: 12, marginBottom: 16 }}>
         <div className="card" style={{ flex: 1, padding: "12px 16px" }}><div className="mn">Potential upside</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: T.up }}>+{money(up)}</div></div>
         <div className="card" style={{ flex: 1, padding: "12px 16px" }}><div className="mn">Potential downside</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: T.down }}>−{money(dn)}</div></div>
         <div className="card" style={{ flex: 1, padding: "12px 16px" }}><div className="mn">Net</div><div className="mono" style={{ fontSize: 22, fontWeight: 600, color: up - dn >= 0 ? T.up : T.down }}>{up - dn >= 0 ? "+" : "−"}{money(Math.abs(up - dn))}</div></div>
       </div>
-      <div className="card" style={{ padding: 0 }}>
-        {week.swings.length === 0 ? <div style={{ padding: 18 }}><div className="empty"><b>No swings logged</b>Track the deals most likely to move your call this week.</div></div> :
-          <table>
-            <thead><tr><th>Account</th><th>Owner</th><th>Direction</th><th style={{ textAlign: "right" }}>Amount</th><th>Why</th><th></th></tr></thead>
-            <tbody>{week.swings.map((s) => (
-              <tr key={s.id}>
-                <td><input value={s.account} placeholder="account" onChange={(e) => upd(s.id, "account", e.target.value)} /></td>
-                <td><select value={s.owner} onChange={(e) => upd(s.id, "owner", e.target.value)}>{meta.managers.map((m) => <option key={m}>{m}</option>)}</select></td>
-                <td><div className="seg">
-                  <button className={s.dir === "up" ? "on" : ""} onClick={() => upd(s.id, "dir", "up")}>Up</button>
-                  <button className={s.dir === "down" ? "on" : ""} onClick={() => upd(s.id, "dir", "down")}>Down</button>
-                </div></td>
-                <td className="cellnum"><input type="number" value={s.amount ?? ""} placeholder="0" onChange={(e) => upd(s.id, "amount", e.target.value)} /></td>
-                <td><input value={s.note} placeholder="context…" onChange={(e) => upd(s.id, "note", e.target.value)} /></td>
-                <td><button className="ico" onClick={() => del(s.id)}><Trash2 size={15} /></button></td>
-              </tr>))}</tbody>
-          </table>}
-      </div>
+
+      {week.swings.length === 0
+        ? <div className="empty"><b>No swings logged</b>Track the deals most likely to move your call this week.</div>
+        : <div className="grid" style={{ gap: 10 }}>
+            {week.swings.map((s) => {
+              const type = s.type || "renewal";
+              const state = s.state || "potential";
+              const typeColor = type === "expansion" ? T.accent : "#9C7BFF";
+              const typeBg = type === "expansion" ? "rgba(76,194,255,.14)" : "rgba(156,123,255,.16)";
+              const stateColor = state === "happened" ? T.up : T.warn;
+              const stateBg = state === "happened" ? "rgba(63,185,80,.15)" : "rgba(214,161,38,.15)";
+              return (
+                <div className="card" key={s.id} style={{ padding: "12px 14px" }}>
+                  <div className="row" style={{ gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                    <input style={{ flex: "0 1 220px", minWidth: 160 }} value={s.account} placeholder="account" onChange={(e) => upd(s.id, "account", e.target.value)} />
+                    <select style={{ flex: "0 0 140px" }} value={s.owner} onChange={(e) => upd(s.id, "owner", e.target.value)}>
+                      {meta.managers.map((m) => <option key={m}>{m}</option>)}
+                    </select>
+                    <div className="seg" title="Renewal vs expansion">
+                      <button className={type === "renewal" ? "on" : ""} onClick={() => upd(s.id, "type", "renewal")} style={type === "renewal" ? { background: typeColor, color: "#0E1116" } : undefined}>Renewal</button>
+                      <button className={type === "expansion" ? "on" : ""} onClick={() => upd(s.id, "type", "expansion")} style={type === "expansion" ? { background: typeColor, color: "#0E1116" } : undefined}>Expansion</button>
+                    </div>
+                    <div className="seg" title="Already happened vs could still happen">
+                      <button className={state === "potential" ? "on" : ""} onClick={() => upd(s.id, "state", "potential")} style={state === "potential" ? { background: stateColor, color: "#0E1116" } : undefined}>Could happen</button>
+                      <button className={state === "happened" ? "on" : ""} onClick={() => upd(s.id, "state", "happened")} style={state === "happened" ? { background: stateColor, color: "#0E1116" } : undefined}>Happened</button>
+                    </div>
+                    <div className="seg" title="Direction of swing">
+                      <button className={s.dir === "up" ? "on" : ""} onClick={() => upd(s.id, "dir", "up")}>Up</button>
+                      <button className={s.dir === "down" ? "on" : ""} onClick={() => upd(s.id, "dir", "down")}>Down</button>
+                    </div>
+                    <div style={{ flex: "0 0 150px" }}>
+                      <MoneyInput value={s.amount} onChange={(n) => updNum(s.id, "amount", n)} placeholder="amount" style={{ width: "100%", textAlign: "right", fontFamily: "'JetBrains Mono', monospace" }} />
+                    </div>
+                    <button className="ico" style={{ marginLeft: "auto" }} onClick={() => del(s.id)}><Trash2 size={15} /></button>
+                  </div>
+                  <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 160px", gap: 10 }}>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
+                      Context
+                      <textarea value={s.note || ""} placeholder="why this swing…" onChange={(e) => upd(s.id, "note", e.target.value)} style={{ minHeight: 52, resize: "vertical" }} />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
+                      Next steps
+                      <textarea value={s.nextSteps || ""} placeholder="who's doing what next…" onChange={(e) => upd(s.id, "nextSteps", e.target.value)} style={{ minHeight: 52, resize: "vertical" }} />
+                    </label>
+                    <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
+                      Due date
+                      <input type="date" value={s.dueDate || ""} onChange={(e) => upd(s.id, "dueDate", e.target.value)} />
+                    </label>
+                  </div>
+                  <div style={{ marginTop: 10, display: "flex", gap: 6, flexWrap: "wrap" }}>
+                    <span className="tag" style={{ background: typeBg, color: typeColor }}>{type === "renewal" ? "Renewal" : "Expansion"}</span>
+                    <span className="tag" style={{ background: stateBg, color: stateColor }}>{state === "happened" ? "Happened" : "Could still happen"}</span>
+                    <span className="tag" style={{ background: s.dir === "up" ? "rgba(63,185,80,.15)" : "rgba(248,81,73,.15)", color: s.dir === "up" ? T.up : T.down }}>
+                      {s.dir === "up" ? "▲" : "▼"} {money(s.amount || 0)}
+                    </span>
+                    {s.dueDate && <span className="tag" style={{ background: T.panel2, color: T.muted }}>Due {s.dueDate}</span>}
+                  </div>
+                </div>
+              );
+            })}
+          </div>}
       <button className="btn gho sm" style={{ marginTop: 12 }} onClick={add}><Plus size={14} />Add swing</button>
     </>
   );
@@ -1224,25 +1312,63 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
   const csvRef = useRef(null);
   const imgRef = useRef(null);
 
-  const grr = week.grr || { rows: [], image: null, imageName: "" };
-  const rows = grr.rows;
+  const grr = week.grr || { rows: [], renewals: [], image: null, imageName: "" };
+  const rows = grr.rows || [];
+  const renewals = grr.renewals || [];
 
   const moneyNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n * 100) / 100; };
   const isIndented = (s) => s !== s.replace(/^[\s   ]+/, "");
 
+  const ensureGrr = (w) => { w.grr = { rows: [], renewals: [], image: null, imageName: "", ...(w.grr || {}) }; };
+
+  // ARR Due edits derive Goal = 95% of ARR Due (still independently editable).
+  const updRowNum = (id, f, n) => updateWeek((w) => {
+    ensureGrr(w);
+    w.grr.rows = (w.grr.rows || []).map((r) => {
+      if (r.id !== id) return r;
+      if (f === "arrDue") {
+        const derivedGoal = n == null ? null : Math.round(n * 0.95 * 100) / 100;
+        return { ...r, arrDue: n, goal: derivedGoal };
+      }
+      return { ...r, [f]: n };
+    });
+    return w;
+  });
   const updRow = (id, f, v) => updateWeek((w) => {
-    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
-    w.grr.rows = (w.grr.rows || []).map((r) => r.id === id ? { ...r, [f]: (f === "goal" || f === "closedWon" || f === "grrCall") ? num(v) : v } : r);
+    ensureGrr(w);
+    w.grr.rows = (w.grr.rows || []).map((r) => r.id === id ? { ...r, [f]: v } : r);
     return w;
   });
   const delRow = (id) => updateWeek((w) => {
-    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+    ensureGrr(w);
     w.grr.rows = (w.grr.rows || []).filter((r) => r.id !== id);
     return w;
   });
   const addRow = () => updateWeek((w) => {
-    w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
-    w.grr.rows = [...(w.grr.rows || []), { id: uid(), manager: "", segment: "", goal: null, closedWon: null, grrCall: null, notes: "" }];
+    ensureGrr(w);
+    w.grr.rows = [...(w.grr.rows || []), { id: uid(), manager: "", segment: "", arrDue: null, goal: null, closedWon: null, grrCall: null, notes: "" }];
+    return w;
+  });
+
+  // Renewals
+  const addRenewal = () => updateWeek((w) => {
+    ensureGrr(w);
+    w.grr.renewals = [...(w.grr.renewals || []), { id: uid(), account: "", manager: meta.managers[0] || "", amount: null, closeDate: "" }];
+    return w;
+  });
+  const updRenewal = (id, f, v) => updateWeek((w) => {
+    ensureGrr(w);
+    w.grr.renewals = (w.grr.renewals || []).map((r) => r.id === id ? { ...r, [f]: v } : r);
+    return w;
+  });
+  const updRenewalNum = (id, f, n) => updateWeek((w) => {
+    ensureGrr(w);
+    w.grr.renewals = (w.grr.renewals || []).map((r) => r.id === id ? { ...r, [f]: n } : r);
+    return w;
+  });
+  const delRenewal = (id) => updateWeek((w) => {
+    ensureGrr(w);
+    w.grr.renewals = (w.grr.renewals || []).filter((r) => r.id !== id);
     return w;
   });
 
@@ -1269,11 +1395,13 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
           if (!name) continue;
           if (/^total$/i.test(name)) continue;       // skip the team total row
           if (isIndented(raw)) continue;             // skip rep rows
+          const arrDue = moneyNum(row[2]);
           built.push({
             id: uid(),
             manager: name,
             segment: String(row[1] ?? "").trim(),
-            goal: moneyNum(row[2]),
+            arrDue,
+            goal: arrDue == null ? null : Math.round(arrDue * 0.95 * 100) / 100,
             closedWon: moneyNum(row[3]),
             grrCall: null,
             notes: "",
@@ -1282,13 +1410,14 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
         if (!built.length) { setCsvErr("No manager rows detected in that file."); return; }
 
         updateWeek((w) => {
-          const prevRows = (w.grr?.rows || []);
+          ensureGrr(w);
+          const prevRows = (w.grr.rows || []);
           // Preserve grrCall + notes if the same manager+segment appears in the new file.
           const enriched = built.map((r) => {
             const old = prevRows.find((p) => p.manager === r.manager && (p.segment || "") === (r.segment || ""));
             return old ? { ...r, grrCall: old.grrCall, notes: old.notes } : r;
           });
-          w.grr = { ...(w.grr || {}), rows: enriched };
+          w.grr.rows = enriched;
           return w;
         });
         setCsvDone(`Loaded ${built.length} manager${built.length !== 1 ? "s" : ""} from ${file.name}.`);
@@ -1315,7 +1444,7 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
         ctx.drawImage(img, 0, 0, cw, ch);
         const dataUrl = canvas.toDataURL("image/jpeg", 0.85);
         updateWeek((w) => {
-          w.grr = { ...(w.grr || { rows: [], image: null, imageName: "" }) };
+          ensureGrr(w);
           w.grr.image = dataUrl; w.grr.imageName = file.name;
           return w;
         });
@@ -1327,7 +1456,9 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
     reader.readAsDataURL(file);
   }
   const clearImage = () => updateWeek((w) => {
-    w.grr = { ...(w.grr || {}), image: null, imageName: "" }; return w;
+    ensureGrr(w);
+    w.grr.image = null; w.grr.imageName = "";
+    return w;
   });
 
   const onCsvDrop = (e) => { e.preventDefault(); setCsvOver(false); handleCsv(e.dataTransfer.files?.[0]); };
@@ -1341,13 +1472,16 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
 
   // Team totals — cap each row's contribution at its own goal so overshoots can't mask undershoots.
   const totals = rows.reduce((a, r) => ({
+    arrDue: a.arrDue + (r.arrDue || 0),
     closedWon: a.closedWon + (r.closedWon || 0),
     cappedCw: a.cappedCw + Math.min(r.closedWon || 0, r.goal || 0),
+    cappedCall: a.cappedCall + Math.min(r.grrCall || 0, r.goal || 0),
     goal: a.goal + (r.goal || 0),
     grrCall: a.grrCall + (r.grrCall || 0),
     lastGrrCall: a.lastGrrCall + (lastGrrCallFor(r) || 0),
-  }), { closedWon: 0, cappedCw: 0, goal: 0, grrCall: 0, lastGrrCall: 0 });
+  }), { arrDue: 0, closedWon: 0, cappedCw: 0, cappedCall: 0, goal: 0, grrCall: 0, lastGrrCall: 0 });
   const teamPct = totals.goal ? (totals.cappedCw / totals.goal) * 100 : null;
+  const teamPotPct = totals.goal ? (totals.cappedCall / totals.goal) * 100 : null;
 
   return (
     <>
@@ -1411,19 +1545,21 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
         </div>
       )}
 
-      <div className="card" style={{ padding: 0, marginBottom: 14 }}>
+      <div className="card" style={{ padding: 0, marginBottom: 14, overflowX: "auto" }}>
         {rows.length === 0
           ? <div style={{ padding: 18 }}><div className="empty"><b>No GRR rows yet</b>Drop the CSV above, or click Add row to enter manually.</div></div>
           : <table>
               <thead><tr>
                 <th>Manager</th>
                 <th>Segment</th>
+                <th style={{ textAlign: "right" }}>ARR Due</th>
+                <th style={{ textAlign: "right" }}>Goal (95%)</th>
                 <th style={{ textAlign: "right" }}>Closed Won</th>
-                <th style={{ textAlign: "right" }}>Goal</th>
                 <th style={{ textAlign: "right" }}>Attainment</th>
                 <th style={{ textAlign: "right" }}>Last GRR Call</th>
                 <th style={{ textAlign: "right" }}>This GRR Call</th>
                 <th style={{ textAlign: "right" }}>WoW Δ</th>
+                <th style={{ textAlign: "right" }}>Pot. Attain</th>
                 <th>Notes</th>
                 <th></th>
               </tr></thead>
@@ -1433,19 +1569,31 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
                 const color = pct == null ? T.muted : pct >= 100 ? T.up : pct >= 80 ? T.warn : T.down;
                 const last = lastGrrCallFor(r);
                 const d = r.grrCall != null && last != null ? r.grrCall - last : null;
+                const rawPot = r.goal && r.grrCall != null ? (r.grrCall / r.goal) * 100 : null;
+                const potPct = rawPot == null ? null : Math.min(rawPot, 100);
+                const potColor = potPct == null ? T.muted : potPct >= 100 ? T.up : potPct >= 80 ? T.warn : T.down;
+                const derived = r.arrDue != null ? Math.round(r.arrDue * 0.95 * 100) / 100 : null;
+                const goalOverridden = derived != null && r.goal != null && Math.abs(derived - r.goal) > 0.5;
                 return (
                   <tr key={r.id}>
                     <td><input value={r.manager} placeholder="manager" onChange={(e) => updRow(r.id, "manager", e.target.value)} /></td>
                     <td><input value={r.segment || ""} placeholder="segment" onChange={(e) => updRow(r.id, "segment", e.target.value)} style={{ width: 110 }} /></td>
-                    <td className="cellnum"><input type="number" value={r.closedWon ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "closedWon", e.target.value)} /></td>
-                    <td className="cellnum"><input type="number" value={r.goal ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "goal", e.target.value)} /></td>
+                    <td className="cellnum"><MoneyInput value={r.arrDue} onChange={(n) => updRowNum(r.id, "arrDue", n)} /></td>
+                    <td className="cellnum">
+                      <MoneyInput value={r.goal} onChange={(n) => updRowNum(r.id, "goal", n)} style={goalOverridden ? { borderColor: T.warn } : undefined} />
+                      {goalOverridden && <div style={{ fontSize: 10, color: T.warn, textAlign: "right", marginTop: 2 }} title={`95% of ARR Due = ${money(derived)}`}>manual override</div>}
+                    </td>
+                    <td className="cellnum"><MoneyInput value={r.closedWon} onChange={(n) => updRowNum(r.id, "closedWon", n)} /></td>
                     <td className="mono" style={{ textAlign: "right", color, paddingRight: 19 }} title={rawPct != null && rawPct > 100 ? `Uncapped: ${rawPct.toFixed(1)}%` : undefined}>
                       {pct == null ? "—" : pct.toFixed(1) + "%" + (rawPct > 100 ? "+" : "")}
                     </td>
                     <td className="mono" style={{ textAlign: "right", color: last == null ? T.faint : T.muted, paddingRight: 19 }}>{last == null ? "—" : money(last)}</td>
-                    <td className="cellnum"><input type="number" value={r.grrCall ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "grrCall", e.target.value)} /></td>
+                    <td className="cellnum"><MoneyInput value={r.grrCall} onChange={(n) => updRowNum(r.id, "grrCall", n)} /></td>
                     <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted, paddingRight: 19 }}>
                       {d == null ? "—" : (d === 0 ? "flat" : (d > 0 ? "+" : "−") + money(Math.abs(d)))}
+                    </td>
+                    <td className="mono" style={{ textAlign: "right", color: potColor, paddingRight: 19 }} title={rawPot != null && rawPot > 100 ? `Uncapped: ${rawPot.toFixed(1)}%` : undefined}>
+                      {potPct == null ? "—" : potPct.toFixed(1) + "%" + (rawPot > 100 ? "+" : "")}
                     </td>
                     <td><input value={r.notes || ""} placeholder="add context…" onChange={(e) => updRow(r.id, "notes", e.target.value)} /></td>
                     <td><button className="ico" onClick={() => delRow(r.id)}><Trash2 size={15} /></button></td>
@@ -1456,21 +1604,104 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
                 <tfoot><tr>
                   <td style={{ fontWeight: 600 }}>Team</td>
                   <td></td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{totals.arrDue ? money(totals.arrDue) : "—"}</td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{totals.goal ? money(totals.goal) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{money(totals.closedWon)}</td>
-                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, paddingRight: 19 }}>{money(totals.goal)}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: teamPct == null ? T.muted : teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down, paddingRight: 19 }}>
                     {teamPct == null ? "—" : teamPct.toFixed(1) + "%"}
                   </td>
                   <td className="mono" style={{ textAlign: "right", color: T.muted, paddingRight: 19 }}>{totals.lastGrrCall ? money(totals.lastGrrCall) : "—"}</td>
                   <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: T.accent, paddingRight: 19 }}>{totals.grrCall ? money(totals.grrCall) : "—"}</td>
-                  <td colSpan={3}></td>
+                  <td></td>
+                  <td className="mono" style={{ textAlign: "right", fontWeight: 600, color: teamPotPct == null ? T.muted : teamPotPct >= 100 ? T.up : teamPotPct >= 80 ? T.warn : T.down, paddingRight: 19 }}>
+                    {teamPotPct == null ? "—" : teamPotPct.toFixed(1) + "%"}
+                  </td>
+                  <td colSpan={2}></td>
                 </tr></tfoot>
               )}
             </table>}
       </div>
 
       <button className="btn gho sm" onClick={addRow}><Plus size={14} />Add row</button>
+
+      {/* Upcoming renewals — close date within 14 days */}
+      <RenewalsSection
+        meta={meta}
+        renewals={renewals}
+        weekDate={week.date}
+        addRenewal={addRenewal}
+        updRenewal={updRenewal}
+        updRenewalNum={updRenewalNum}
+        delRenewal={delRenewal}
+      />
     </>
+  );
+}
+
+function RenewalsSection({ meta, renewals, weekDate, addRenewal, updRenewal, updRenewalNum, delRenewal }) {
+  const [showAll, setShowAll] = useState(false);
+  // Anchor "today" to the week's meeting date for predictability across weeks.
+  const anchor = new Date(weekDate + "T00:00:00");
+  const horizon = new Date(anchor); horizon.setDate(horizon.getDate() + 14);
+
+  const dayDiff = (iso) => {
+    if (!iso) return null;
+    const d = new Date(iso + "T00:00:00");
+    return Math.round((d - anchor) / 86400000);
+  };
+
+  const upcoming = renewals
+    .filter((r) => r.closeDate)
+    .map((r) => ({ ...r, _days: dayDiff(r.closeDate) }))
+    .filter((r) => r._days != null && r._days >= 0 && r._days <= 14)
+    .sort((a, b) => a._days - b._days);
+
+  const shown = showAll ? renewals : upcoming;
+  const totalUpcoming = upcoming.reduce((s, r) => s + (r.amount || 0), 0);
+
+  return (
+    <div style={{ marginTop: 24 }}>
+      <div className="between" style={{ marginBottom: 6 }}>
+        <div>
+          <h3 style={{ fontSize: 15, fontWeight: 600, margin: "0 0 3px", letterSpacing: "-.2px" }}>Renewals closing in the next 2 weeks</h3>
+          <p className="sub" style={{ margin: 0, fontSize: 12 }}>From {fmtDate(weekDate)} through {fmtDate(horizon.toISOString().slice(0, 10))}. {upcoming.length} renewal{upcoming.length !== 1 ? "s" : ""} · {money(totalUpcoming)}.</p>
+        </div>
+        <div className="seg">
+          <button className={!showAll ? "on" : ""} onClick={() => setShowAll(false)}>Next 14 days ({upcoming.length})</button>
+          <button className={showAll ? "on" : ""} onClick={() => setShowAll(true)}>All ({renewals.length})</button>
+        </div>
+      </div>
+
+      <div className="card" style={{ padding: 0 }}>
+        {shown.length === 0
+          ? <div style={{ padding: 18 }}><div className="empty"><b>{showAll ? "No renewals tracked" : "Nothing closing in 14 days"}</b>{showAll ? "Add renewals manually below." : "Add upcoming renewals to keep them visible here."}</div></div>
+          : <table>
+              <thead><tr>
+                <th>Account</th><th>Manager</th>
+                <th style={{ textAlign: "right" }}>Amount</th>
+                <th>Close date</th>
+                <th style={{ textAlign: "right" }}>Days out</th>
+                <th></th>
+              </tr></thead>
+              <tbody>{shown.map((r) => {
+                const days = dayDiff(r.closeDate);
+                const dayColor = days == null ? T.muted : days < 0 ? T.down : days <= 3 ? T.warn : days <= 14 ? T.accent : T.muted;
+                return (
+                  <tr key={r.id}>
+                    <td><input value={r.account} placeholder="account" onChange={(e) => updRenewal(r.id, "account", e.target.value)} /></td>
+                    <td><select value={r.manager} onChange={(e) => updRenewal(r.id, "manager", e.target.value)}>{meta.managers.map((m) => <option key={m}>{m}</option>)}</select></td>
+                    <td className="cellnum"><MoneyInput value={r.amount} onChange={(n) => updRenewalNum(r.id, "amount", n)} /></td>
+                    <td><input type="date" value={r.closeDate || ""} onChange={(e) => updRenewal(r.id, "closeDate", e.target.value)} /></td>
+                    <td className="mono" style={{ textAlign: "right", color: dayColor, paddingRight: 19 }}>{days == null ? "—" : days < 0 ? `${days}d (past)` : `${days}d`}</td>
+                    <td><button className="ico" onClick={() => delRenewal(r.id)}><Trash2 size={15} /></button></td>
+                  </tr>
+                );
+              })}</tbody>
+            </table>}
+      </div>
+
+      <button className="btn gho sm" style={{ marginTop: 10 }} onClick={addRenewal}><Plus size={14} />Add renewal</button>
+    </div>
   );
 }
 
@@ -1490,11 +1721,13 @@ function Update({ meta, week, totalCall, totalCommit, netSwing, flagged, flagged
     meta.managers.forEach((m) => { const c = week.calls[m] || {}; L.push(`• ${m}: ${money(c.call)}${c.note ? ` — ${c.note}` : ""}`); });
     if (week.swings.length) {
       L.push(``); L.push(`SWING FACTORS`);
-      week.swings.forEach((s) => L.push(`• ${s.dir === "up" ? "▲" : "▼"} ${s.account} (${s.owner}) ${s.dir === "up" ? "+" : "−"}${money(s.amount)}${s.note ? ` — ${s.note}` : ""}`));
-    }
-    if (week.headlines.length) {
-      L.push(``); L.push(`HEADLINES`);
-      week.headlines.forEach((h) => L.push(`• ${h.account} (${h.owner}): ${h.note}`));
+      week.swings.forEach((s) => {
+        const type = (s.type || "renewal") === "expansion" ? "Expansion" : "Renewal";
+        const state = (s.state || "potential") === "happened" ? "happened" : "could still happen";
+        L.push(`• ${s.dir === "up" ? "▲" : "▼"} ${s.account} (${s.owner}) ${s.dir === "up" ? "+" : "−"}${money(s.amount)} — ${type}, ${state}${s.note ? ` — ${s.note}` : ""}`);
+        if (s.nextSteps) L.push(`    Next: ${s.nextSteps}${s.dueDate ? ` (due ${s.dueDate})` : ""}`);
+        else if (s.dueDate) L.push(`    Due ${s.dueDate}`);
+      });
     }
     const activeTips = week.tips.filter((t) => t.text && (t.status || "not_tried") !== "not_tried");
     if (activeTips.length) {
@@ -1605,7 +1838,7 @@ function SettingsTab({ meta, saveMeta, updateWeek, week }) {
         <div className="card">
           <b style={{ fontSize: 14 }}>Plan for this week</b>
           <p className="sub" style={{ margin: "5px 0 10px" }}>Target the call is measured against on {fmtDate(week.date)}.</p>
-          <input type="number" className="mono" style={{ width: "100%" }} value={week.plan ?? ""} placeholder="e.g. 4200000" onChange={(e) => setPlan(e.target.value)} />
+          <MoneyInput value={week.plan} onChange={(n) => updateWeek((w) => { w.plan = n; return w; })} className="mono" style={{ width: "100%" }} placeholder="e.g. 4,200,000" />
         </div>
       </div>
     </>
