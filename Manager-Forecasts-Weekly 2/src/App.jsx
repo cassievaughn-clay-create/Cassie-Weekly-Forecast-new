@@ -134,7 +134,7 @@ const CSS = `
 .wfm .drop.over { border-color:${T.accent}; background:rgba(76,194,255,.07); color:${T.text}; }
 .wfm .drop b { display:block; color:${T.text}; font-size:14px; margin-bottom:4px; }
 .wfm .drop .di { color:${T.accent}; margin-bottom:8px; }
-.wfm .map { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:10px; margin:14px 0; }
+.wfm .map { display:grid; grid-template-columns:repeat(auto-fit,minmax(140px,1fr)); gap:10px; margin:14px 0; }
 .wfm .map label { font-size:11px; color:${T.muted}; display:flex; flex-direction:column; gap:5px; }
 .wfm .map select.bad { border-color:${T.down}; }
 .wfm .prev th, .wfm .prev td { padding:5px 9px; font-size:12px; }
@@ -349,20 +349,42 @@ export default function App() {
   );
 }
 
+// Behind: an account is flagged against a milestone only AFTER that milestone is past:
+//   Day 180 check applies in [180, 270);  Day 270 check applies in [270, ∞).
+// If the account's age is unknown, we fall back to the old behaviour so historical data
+// without a `daysElapsed` field still works.
 function flag(r, t) {
+  const age = r.daysElapsed;
+  if (age != null) {
+    if (age >= 180 && age < 270) return r.day180 != null && r.day180 < t.d180;
+    if (age >= 270) return r.day270 != null && r.day270 < t.d270;
+    return false; // < 180 days old: nothing to flag yet
+  }
   const checks = [];
   if (r.day180 != null) checks.push(r.day180 < t.d180);
   if (r.day270 != null) checks.push(r.day270 < t.d270);
-  if (!checks.length) return false; // not yet measured at any milestone
+  if (!checks.length) return false;
   return t.mode === "and" ? checks.every(Boolean) : checks.some(Boolean);
 }
 
+// Ahead: an account is flagged against a milestone BEFORE that milestone:
+//   Day 180 check applies for age < 180; Day 270 check applies for age < 270.
+// Past Day 270 the account no longer counts as "ahead". Falls back to old behaviour
+// when age is unknown.
 function flagAhead(r, t) {
+  const age = r.daysElapsed;
+  const mode = t.aheadMode || "and";
+  if (age != null) {
+    const checks = [];
+    if (age < 180 && r.day180 != null) checks.push(r.day180 >= (t.aheadD180 ?? 90));
+    if (age < 270 && r.day270 != null) checks.push(r.day270 >= (t.aheadD270 ?? 100));
+    if (!checks.length) return false;
+    return mode === "and" ? checks.every(Boolean) : checks.some(Boolean);
+  }
   const checks = [];
   if (r.day180 != null) checks.push(r.day180 >= (t.aheadD180 ?? 90));
   if (r.day270 != null) checks.push(r.day270 >= (t.aheadD270 ?? 100));
   if (!checks.length) return false;
-  const mode = t.aheadMode || "and";
   return mode === "and" ? checks.every(Boolean) : checks.some(Boolean);
 }
 
@@ -814,8 +836,8 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
   const matches = isAhead ? flaggedAhead : flagged;
   const [view, setView] = useState("flagged");
   const [ownerFilter, setOwnerFilter] = useState("all");
-  const add = () => updateWeek((w) => { w.trending.push({ id: uid(), account: "", owner: meta.managers[0] || "", day180: null, day270: null, actionPlan: "" }); return w; });
-  const upd = (id, f, v) => updateWeek((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: f === "day180" || f === "day270" ? num(v) : v } : r); return w; });
+  const add = () => updateWeek((w) => { w.trending.push({ id: uid(), account: "", owner: meta.managers[0] || "", day180: null, day270: null, daysElapsed: null, actionPlan: "" }); return w; });
+  const upd = (id, f, v) => updateWeek((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: (f === "day180" || f === "day270" || f === "daysElapsed") ? num(v) : v } : r); return w; });
   const del = (id) => updateWeek((w) => { w.trending = w.trending.filter((r) => r.id !== id); return w; });
 
   const hasD270 = week.trending.some((r) => r.day270 != null);
@@ -840,8 +862,8 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
   const isFlaggedFn = isAhead ? (r) => flagAhead(r, t) : (r) => flag(r, t);
 
   const ruleSummary = isAhead
-    ? <>An account shows here when its pacing is at or above <b style={{ color: T.text }}>{t.aheadD180 ?? 90}%</b> at Day 180 {hasD270 ? <><b style={{ color: T.text }}>{(t.aheadMode || "and") === "and" ? "and" : "or"}</b> <b style={{ color: T.text }}>{t.aheadD270 ?? 100}%</b> at Day 270</> : "(only Day 180 data loaded — see note below)"}. Values are attainment vs. expected pace. Adjust the rule in Settings.</>
-    : <>Accounts pacing behind plan. An account is flagged when it's behind <b style={{ color: T.text }}>{t.d180}%</b> at Day 180 {hasD270 ? <><b style={{ color: T.text }}>{t.mode === "and" ? "and" : "or"}</b> behind <b style={{ color: T.text }}>{t.d270}%</b> at Day 270</> : "(no Day 270 data loaded yet — see note below)"}. Values are attainment vs. expected pace, so 42 means at 42% of where the account should be. Accounts not yet at a milestone stay unflagged. Adjust the rule in Settings.</>;
+    ? <>Accounts pacing ahead. An account is flagged at the <b style={{ color: T.text }}>Day 180</b> threshold (<b style={{ color: T.text }}>≥ {t.aheadD180 ?? 90}%</b>) only while it's <b style={{ color: T.text }}>before Day 180</b>, and at the <b style={{ color: T.text }}>Day 270</b> threshold (<b style={{ color: T.text }}>≥ {t.aheadD270 ?? 100}%</b>) only while it's <b style={{ color: T.text }}>before Day 270</b>. Once past Day 270 the account no longer counts as ahead. Adjust the rule in Settings.</>
+    : <>Accounts pacing behind plan. The <b style={{ color: T.text }}>Day 180</b> rule (<b style={{ color: T.text }}>&lt; {t.d180}%</b>) only flags accounts <b style={{ color: T.text }}>between Day 180 and Day 270</b>, and the <b style={{ color: T.text }}>Day 270</b> rule (<b style={{ color: T.text }}>&lt; {t.d270}%</b>) only flags accounts <b style={{ color: T.text }}>past Day 270</b>. Values are attainment vs. expected pace, so 42 means at 42% of where the account should be. Adjust the rule in Settings.</>;
 
   return (
     <>
@@ -877,6 +899,7 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
         <table>
           <thead><tr>
             <th>Account</th><th>Owner</th>
+            <th style={{ textAlign: "right" }}>Day</th>
             <th style={{ textAlign: "right" }}>Day 180</th><th style={{ textAlign: "right" }}>Day 270</th>
             <th>Status</th><th>Action Plan</th><th></th>
           </tr></thead>
@@ -886,6 +909,7 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
               <tr key={r.id} style={{ background: f ? rowHighlight : "transparent" }}>
                 <td><input value={r.account} placeholder="account" onChange={(e) => upd(r.id, "account", e.target.value)} /></td>
                 <td><select value={r.owner} onChange={(e) => upd(r.id, "owner", e.target.value)}>{ownerOpts(r.owner).map((m) => <option key={m}>{m}</option>)}</select></td>
+                <td className="cellnum"><input type="number" value={r.daysElapsed ?? ""} placeholder="—" onChange={(e) => upd(r.id, "daysElapsed", e.target.value)} title="Current age of the account in days. Drives which milestone rule applies." /></td>
                 <td className="cellnum"><input type="number" value={r.day180 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day180", e.target.value)} /></td>
                 <td className="cellnum"><input type="number" value={r.day270 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day270", e.target.value)} /></td>
                 <td>{f ? <span className="tag" style={{ background: accentBg, color: accent }}>{statusLabel}</span>
@@ -915,7 +939,7 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
 function Importer({ meta, updateWeek }) {
   const [rows, setRows] = useState(null);
   const [headers, setHeaders] = useState([]);
-  const [map, setMap] = useState({ account: "", owner: "", day180: "", day270: "" });
+  const [map, setMap] = useState({ account: "", owner: "", day180: "", day270: "", daysElapsed: "" });
   const [scale, setScale] = useState("percent");
   const [mode, setMode] = useState("replace");
   const [over, setOver] = useState(false);
@@ -959,6 +983,7 @@ function Importer({ meta, updateWeek }) {
       owner: find(/manager/i) || find(/owner/i) || find(/\brep\b|\bae\b|csm|exec/i),
       day180: milestone("180"),
       day270: milestone("270"),
+      daysElapsed: find(/days?\s*(?:since|elapsed|active|count|in)?\b/i) || find(/lifecycle\s*day|customer\s*day|account\s*age|current\s*day|^day$|account\s*day/i) || find(/\bage\b/i),
     };
   }
 
@@ -993,12 +1018,14 @@ function Importer({ meta, updateWeek }) {
   function build() {
     const f = scale === "ratio" ? 100 : 1;
     const conv = (v) => { const n = pctNum(v); return n == null ? null : Math.round(n * f * 10) / 10; };
+    const daysNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : Math.round(n); };
     return rows.map((r) => ({
       id: uid(),
       account: String(r[map.account] ?? "").trim(),
       owner: String(r[map.owner] ?? "").trim() || (meta.managers[0] || ""),
       day180: map.day180 ? conv(r[map.day180]) : null,
       day270: map.day270 ? conv(r[map.day270]) : null,
+      daysElapsed: map.daysElapsed ? daysNum(r[map.daysElapsed]) : null,
       actionPlan: "",
     })).filter((x) => x.account);
   }
@@ -1024,7 +1051,19 @@ function Importer({ meta, updateWeek }) {
   function importPaste() {
     const lines = bulk.trim().split("\n").map((l) => l.split(/[\t,]/).map((x) => x.trim())).filter((r) => r[0]);
     if (!lines.length) { setErr("Nothing to import."); return; }
-    const built = lines.map((r) => ({ id: uid(), account: r[0], owner: r[1] || meta.managers[0] || "", day180: pctNum(r[2]), day270: pctNum(r[3]), actionPlan: "" }));
+    // Two paste shapes supported: Account, Owner, Day180%, Day270%  OR  Account, Owner, Days, Day180%, Day270%
+    const built = lines.map((r) => {
+      const hasDays = r.length >= 5;
+      return {
+        id: uid(),
+        account: r[0],
+        owner: r[1] || meta.managers[0] || "",
+        daysElapsed: hasDays ? pctNum(r[2]) : null,
+        day180: pctNum(hasDays ? r[3] : r[2]),
+        day270: pctNum(hasDays ? r[4] : r[3]),
+        actionPlan: "",
+      };
+    });
     const top = rankUnion(built);
     if (!top.length) { setErr(`None of the ${built.length} rows match the behind or ahead rules.`); return; }
     updateWeek((w) => {
@@ -1038,7 +1077,7 @@ function Importer({ meta, updateWeek }) {
     setBulk(""); setErr("");
   }
 
-  const TARGETS = [["account", "Account"], ["owner", "Owner"], ["day180", "Day 180 %"], ["day270", "Day 270 %"]];
+  const TARGETS = [["account", "Account"], ["owner", "Owner"], ["daysElapsed", "Days since start"], ["day180", "Day 180 %"], ["day270", "Day 270 %"]];
 
   return (
     <div className="card" style={{ marginTop: 18 }}>
@@ -1113,6 +1152,7 @@ function Importer({ meta, updateWeek }) {
                         <td><span className="tag" style={{ background: "rgba(248,81,73,.15)", color: T.down }}>Behind</span></td>
                         <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
                         <td>{r.owner}</td>
+                        <td className="mono">{r.daysElapsed == null ? "—" : r.daysElapsed}</td>
                         <td className="mono">{r.day180 == null ? "—" : r.day180 + "%"}</td>
                         <td className="mono">{r.day270 == null ? "—" : r.day270 + "%"}</td>
                       </tr>))}
@@ -1121,6 +1161,7 @@ function Importer({ meta, updateWeek }) {
                         <td><span className="tag" style={{ background: "rgba(63,185,80,.15)", color: T.up }}>Ahead</span></td>
                         <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
                         <td>{r.owner}</td>
+                        <td className="mono">{r.daysElapsed == null ? "—" : r.daysElapsed}</td>
                         <td className="mono">{r.day180 == null ? "—" : r.day180 + "%"}</td>
                         <td className="mono">{r.day270 == null ? "—" : r.day270 + "%"}</td>
                       </tr>))}
@@ -1148,16 +1189,16 @@ function Importer({ meta, updateWeek }) {
             })()}
           </div>
           <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
-            Imports the worst-pacing behind accounts (Day 180 &lt; {meta.thresholds.d180}%) and the best-pacing ahead accounts (Day 180 ≥ {meta.thresholds.aheadD180 ?? 90}%), each capped at the Top value. Existing Action Plans are preserved if the same account/owner is re-imported. “Replace” swaps the whole segment for this week; “Add” appends.
+            Behind: Day 180 rule (&lt; {meta.thresholds.d180}%) applies only between Day 180 and Day 270; Day 270 rule (&lt; {meta.thresholds.d270}%) applies only after Day 270. Ahead: Day 180 rule (≥ {meta.thresholds.aheadD180 ?? 90}%) applies before Day 180; Day 270 rule (≥ {meta.thresholds.aheadD270 ?? 100}%) applies before Day 270. Map the <b>Days since start</b> column above to drive the gating — without it, the older AND/OR logic falls through. Existing Action Plans are preserved on re-import.
           </p>
         </>
       )}
 
       {showPaste && (
         <>
-          <p className="sub" style={{ margin: "0 0 9px" }}>One per line: <span className="mono" style={{ color: T.text }}>Account, Owner, Day180%, Day270%</span> (comma or tab separated)</p>
+          <p className="sub" style={{ margin: "0 0 9px" }}>One per line: <span className="mono" style={{ color: T.text }}>Account, Owner, Days, Day180%, Day270%</span> (comma or tab separated). Days is optional — without it, the legacy 4-column format also works.</p>
           <textarea style={{ width: "100%", minHeight: 70, resize: "vertical", marginBottom: 10 }} value={bulk}
-            placeholder={"Helio Corp, Okafor, 42, 78\nQuill Labs, Petrova, 61, 85"} onChange={(e) => setBulk(e.target.value)} />
+            placeholder={"Helio Corp, Rachel, 210, 42, 78\nQuill Labs, Michaela, 95, 61, —"} onChange={(e) => setBulk(e.target.value)} />
           <div className="row">
             <div className="seg">
               <button className={mode === "replace" ? "on" : ""} onClick={() => setMode("replace")}>Replace list</button>
