@@ -1298,14 +1298,15 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
     return pr?.grrCall ?? null;
   };
 
-  // Team totals
+  // Team totals — cap each row's contribution at its own goal so overshoots can't mask undershoots.
   const totals = rows.reduce((a, r) => ({
     closedWon: a.closedWon + (r.closedWon || 0),
+    cappedCw: a.cappedCw + Math.min(r.closedWon || 0, r.goal || 0),
     goal: a.goal + (r.goal || 0),
     grrCall: a.grrCall + (r.grrCall || 0),
     lastGrrCall: a.lastGrrCall + (lastGrrCallFor(r) || 0),
-  }), { closedWon: 0, goal: 0, grrCall: 0, lastGrrCall: 0 });
-  const teamPct = totals.goal ? (totals.closedWon / totals.goal) * 100 : null;
+  }), { closedWon: 0, cappedCw: 0, goal: 0, grrCall: 0, lastGrrCall: 0 });
+  const teamPct = totals.goal ? (totals.cappedCw / totals.goal) * 100 : null;
 
   return (
     <>
@@ -1358,9 +1359,11 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
       {teamPct != null && (
         <div className="card" style={{ marginBottom: 14 }}>
           <div className="between" style={{ marginBottom: 8 }}>
-            <b style={{ fontSize: 14 }}>Team GRR attainment (Closed Won only)</b>
-            <span className="mono" style={{ fontSize: 13, color: teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down }}>
-              <b>{teamPct.toFixed(1)}%</b> · {money(totals.closedWon)} / {money(totals.goal)}
+            <b style={{ fontSize: 14 }}>Team GRR attainment (Closed Won only, capped at 100% per manager)</b>
+            <span className="mono" style={{ fontSize: 13, color: teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down }}
+              title={totals.closedWon !== totals.cappedCw ? `Raw Closed Won (uncapped): ${money(totals.closedWon)}` : undefined}>
+              <b>{teamPct.toFixed(1)}%</b> · {money(totals.cappedCw)} / {money(totals.goal)}
+              {totals.closedWon !== totals.cappedCw && <span style={{ color: T.faint, fontSize: 11.5, marginLeft: 6 }}>(raw {money(totals.closedWon)})</span>}
             </span>
           </div>
           <div className="bar"><i style={{ width: Math.min(100, teamPct) + "%", background: teamPct >= 100 ? T.up : teamPct >= 80 ? T.warn : T.down }} /></div>
@@ -1384,7 +1387,8 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
                 <th></th>
               </tr></thead>
               <tbody>{rows.map((r) => {
-                const pct = r.goal ? (r.closedWon || 0) / r.goal * 100 : null;
+                const rawPct = r.goal ? (r.closedWon || 0) / r.goal * 100 : null;
+                const pct = rawPct == null ? null : Math.min(rawPct, 100);
                 const color = pct == null ? T.muted : pct >= 100 ? T.up : pct >= 80 ? T.warn : T.down;
                 const last = lastGrrCallFor(r);
                 const d = r.grrCall != null && last != null ? r.grrCall - last : null;
@@ -1394,7 +1398,9 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
                     <td><input value={r.segment || ""} placeholder="segment" onChange={(e) => updRow(r.id, "segment", e.target.value)} style={{ width: 110 }} /></td>
                     <td className="cellnum"><input type="number" value={r.closedWon ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "closedWon", e.target.value)} /></td>
                     <td className="cellnum"><input type="number" value={r.goal ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "goal", e.target.value)} /></td>
-                    <td className="mono" style={{ textAlign: "right", color, paddingRight: 19 }}>{pct == null ? "—" : pct.toFixed(1) + "%"}</td>
+                    <td className="mono" style={{ textAlign: "right", color, paddingRight: 19 }} title={rawPct != null && rawPct > 100 ? `Uncapped: ${rawPct.toFixed(1)}%` : undefined}>
+                      {pct == null ? "—" : pct.toFixed(1) + "%" + (rawPct > 100 ? "+" : "")}
+                    </td>
                     <td className="mono" style={{ textAlign: "right", color: last == null ? T.faint : T.muted, paddingRight: 19 }}>{last == null ? "—" : money(last)}</td>
                     <td className="cellnum"><input type="number" value={r.grrCall ?? ""} placeholder="—" onChange={(e) => updRow(r.id, "grrCall", e.target.value)} /></td>
                     <td className="mono" style={{ textAlign: "right", color: d > 0 ? T.up : d < 0 ? T.down : T.muted, paddingRight: 19 }}>
