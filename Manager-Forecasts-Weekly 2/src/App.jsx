@@ -199,6 +199,29 @@ function MoneyInput({ value, onChange, placeholder = "—", style, className }) 
   );
 }
 
+// Free-text input that auto-grows to fit its content so nothing gets truncated.
+// User can still drag the bottom-right corner to manually resize.
+function ExpandableText({ value, onChange, placeholder, minHeight = 32, style, className }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    el.style.height = "auto";
+    el.style.height = Math.max(minHeight, el.scrollHeight) + "px";
+  }, [value, minHeight]);
+  return (
+    <textarea
+      ref={ref}
+      className={className}
+      rows={1}
+      style={{ width: "100%", minHeight, resize: "vertical", padding: "5px 7px", fontSize: 13, lineHeight: 1.4, overflow: "hidden", ...style }}
+      value={value || ""}
+      placeholder={placeholder}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  );
+}
+
 function thisMonday() {
   const d = new Date(); const day = d.getDay(); const diff = (day === 0 ? -6 : 1) - day;
   d.setDate(d.getDate() + diff); return d.toISOString().slice(0, 10);
@@ -304,7 +327,11 @@ export default function App() {
 
   const totalCall = meta.managers.reduce((s, m) => s + (week.calls[m]?.call || 0), 0);
   const totalCommit = meta.managers.reduce((s, m) => s + (week.calls[m]?.commit || 0), 0);
-  const planPct = week.plan ? (totalCall / week.plan) * 100 : 0;
+  const totalGrrCall = (week.grr?.rows || []).reduce((s, r) => s + (r.grrCall || 0), 0);
+  const totalGrrGoal = (week.grr?.rows || []).reduce((s, r) => s + (r.goal || 0), 0);
+  const netCall = totalCall + totalGrrCall;
+  const netPlan = (week.plan || 0) + totalGrrGoal;
+  const planPct = netPlan ? (netCall / netPlan) * 100 : 0;
   const netSwing = week.swings.reduce((s, x) => s + (x.dir === "up" ? 1 : -1) * (x.amount || 0), 0);
   const gColor = planPct >= 100 ? T.up : planPct >= 92 ? T.warn : T.down;
 
@@ -323,7 +350,12 @@ export default function App() {
         <div className="top">
           <div className="brand"><b>Forecast Cockpit</b><span>Weekly Manager Review</span></div>
           <div className="gauge">
-            <div className="gl"><span>Call vs Plan</span><span className="mono">{money(totalCall)} / {money(week.plan)}</span></div>
+            <div className="gl">
+              <span>Net Call vs Plan (Growth + GRR)</span>
+              <span className="mono" title={`Growth: ${money(totalCall)} / ${money(week.plan)}  ·  GRR: ${money(totalGrrCall)} / ${money(totalGrrGoal)}`}>
+                {money(netCall)} / {money(netPlan)}
+              </span>
+            </div>
             <div className="bar"><i style={{ width: Math.min(100, planPct) + "%", background: gColor }} /></div>
           </div>
           <div className="tpill"><small>Net Swing</small>
@@ -582,7 +614,7 @@ function Calls({ meta, week, prevWeek, updateWeek, saveMeta, totalCall }) {
                   <td className="mono" style={{ textAlign: "right", color: potColor, paddingRight: 19 }}>
                     {potPct == null ? "—" : potPct.toFixed(1) + "%"}
                   </td>
-                  <td><input value={c.note || ""} placeholder="add context…" onChange={(e) => set(m, "note", e.target.value)} /></td>
+                  <td style={{ minWidth: 220 }}><ExpandableText value={c.note} placeholder="add context…" onChange={(v) => set(m, "note", v)} /></td>
                 </tr>);
             })}
           </tbody>
@@ -758,11 +790,11 @@ function Swings({ week, meta, updateWeek }) {
                   <div className="grid" style={{ gridTemplateColumns: "1fr 1fr 160px", gap: 10 }}>
                     <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
                       Context
-                      <textarea value={s.note || ""} placeholder="why this swing…" onChange={(e) => upd(s.id, "note", e.target.value)} style={{ minHeight: 52, resize: "vertical" }} />
+                      <ExpandableText value={s.note} placeholder="why this swing…" minHeight={52} onChange={(v) => upd(s.id, "note", v)} />
                     </label>
                     <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
                       Next steps
-                      <textarea value={s.nextSteps || ""} placeholder="who's doing what next…" onChange={(e) => upd(s.id, "nextSteps", e.target.value)} style={{ minHeight: 52, resize: "vertical" }} />
+                      <ExpandableText value={s.nextSteps} placeholder="who's doing what next…" minHeight={52} onChange={(v) => upd(s.id, "nextSteps", v)} />
                     </label>
                     <label style={{ display: "flex", flexDirection: "column", gap: 4, fontSize: 11, color: T.muted }}>
                       Due date
@@ -844,9 +876,10 @@ function Tips({ meta, week, updateWeek }) {
     const s = tipStatus(t.status);
     return (
       <div key={t.id} className="row" style={{ gap: 10, alignItems: "flex-start", padding: "10px 0", borderBottom: "1px solid " + T.panel2 }}>
-        <textarea style={{ flex: 1, minHeight: 32, resize: "vertical", border: "1px solid " + T.line, borderRadius: 7, padding: "6px 8px", fontSize: 13 }}
-          value={t.text} placeholder="What are they trying? (e.g. cold-call walk-ins, ABM sequence with CFO, etc.)"
-          onChange={(e) => editText(t.id, e.target.value)} />
+        <div style={{ flex: 1 }}>
+          <ExpandableText value={t.text} placeholder="What are they trying? (e.g. cold-call walk-ins, ABM sequence with CFO, etc.)"
+            onChange={(v) => editText(t.id, v)} style={{ border: "1px solid " + T.line, borderRadius: 7 }} />
+        </div>
         <div className="seg" style={{ flexShrink: 0 }}>
           {TIP_STATUSES.map((opt) => (
             <button key={opt.key} className={t.status === opt.key ? "on" : ""}
@@ -898,8 +931,9 @@ function Tips({ meta, week, updateWeek }) {
                   <option value="">— pick owner —</option>
                   {meta.managers.map((mm) => <option key={mm} value={mm}>{mm}</option>)}
                 </select>
-                <textarea style={{ flex: 1, minHeight: 32, resize: "vertical", border: "1px solid " + T.line, borderRadius: 7, padding: "6px 8px", fontSize: 13 }}
-                  value={t.text} onChange={(e) => editText(t.id, e.target.value)} />
+                <div style={{ flex: 1 }}>
+                  <ExpandableText value={t.text} onChange={(v) => editText(t.id, v)} style={{ border: "1px solid " + T.line, borderRadius: 7 }} />
+                </div>
                 <div className="seg" style={{ flexShrink: 0 }}>
                   {TIP_STATUSES.map((opt) => (
                     <button key={opt.key} className={t.status === opt.key ? "on" : ""}
@@ -1003,11 +1037,11 @@ function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
                 <td>{f ? <span className="tag" style={{ background: accentBg, color: accent }}>{statusLabel}</span>
                   : <span className="tag" style={{ background: T.panel2, color: T.muted }}>{otherStatusLabel}</span>}</td>
                 <td style={{ minWidth: 220 }}>
-                  <textarea
-                    value={r.actionPlan || ""}
+                  <ExpandableText
+                    value={r.actionPlan}
                     placeholder={isAhead ? "what's working…" : "next step, owner, ETA…"}
-                    onChange={(e) => upd(r.id, "actionPlan", e.target.value)}
-                    style={{ width: "100%", minHeight: 32, resize: "vertical", padding: "5px 7px", fontSize: 12.5 }}
+                    onChange={(v) => upd(r.id, "actionPlan", v)}
+                    style={{ fontSize: 12.5 }}
                   />
                 </td>
                 <td><button className="ico" onClick={() => del(r.id)}><Trash2 size={15} /></button></td>
@@ -1595,7 +1629,7 @@ function Grr({ week, meta, prevWeek, updateWeek }) {
                     <td className="mono" style={{ textAlign: "right", color: potColor, paddingRight: 19 }} title={rawPot != null && rawPot > 100 ? `Uncapped: ${rawPot.toFixed(1)}%` : undefined}>
                       {potPct == null ? "—" : potPct.toFixed(1) + "%" + (rawPot > 100 ? "+" : "")}
                     </td>
-                    <td><input value={r.notes || ""} placeholder="add context…" onChange={(e) => updRow(r.id, "notes", e.target.value)} /></td>
+                    <td style={{ minWidth: 220 }}><ExpandableText value={r.notes} placeholder="add context…" onChange={(v) => updRow(r.id, "notes", v)} /></td>
                     <td><button className="ico" onClick={() => delRow(r.id)}><Trash2 size={15} /></button></td>
                   </tr>
                 );
