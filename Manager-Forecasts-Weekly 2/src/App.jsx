@@ -4,7 +4,7 @@ import {
   LineChart, Line, XAxis, YAxis, Tooltip, ResponsiveContainer, ReferenceLine, CartesianGrid,
 } from "recharts";
 import {
-  LayoutDashboard, Users, ArrowUpDown, Megaphone, Lightbulb, TrendingDown,
+  LayoutDashboard, Users, ArrowUpDown, Megaphone, Lightbulb, TrendingDown, TrendingUp,
   FileText, Settings as SettingsIcon, Plus, Trash2, Check, X, Copy, Sparkles,
   ChevronUp, ChevronDown, AlertTriangle,
 } from "lucide-react";
@@ -190,6 +190,7 @@ const NAV = [
   ["headlines", "Headlines", Megaphone],
   ["tips", "Pipeline Tips", Lightbulb],
   ["trending", "Trending Behind", TrendingDown],
+  ["ahead", "Trending Ahead", TrendingUp],
   ["update", "Weekly Update", FileText],
   ["settings", "Settings", SettingsIcon],
 ];
@@ -229,7 +230,7 @@ export default function App() {
         const managers = ["Rachel", "Michaela", "Emma", "Sammi", "Gabby", "Suchita", "Eli"];
         const d = thisMonday();
         m = { activeWeek: d, weeks: [d], managers,
-          thresholds: { d180: 50, d270: 90, mode: "and" } };
+          thresholds: { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" } };
         const wk = blankWeek(d, managers, null);
         await sset("meta", m); await sset("week:" + d, wk);
         setWeeks({ [d]: wk });
@@ -237,6 +238,13 @@ export default function App() {
         const all = {};
         for (const id of m.weeks) { const w = await sget("week:" + id); if (w) all[id] = w; }
         setWeeks(all);
+      }
+      // Backfill thresholds for users with older saved state
+      const defaults = { d180: 50, d270: 90, mode: "and", aheadD180: 90, aheadD270: 100, aheadMode: "and" };
+      const merged = { ...defaults, ...(m.thresholds || {}) };
+      if (JSON.stringify(merged) !== JSON.stringify(m.thresholds)) {
+        m = { ...m, thresholds: merged };
+        await sset("meta", m);
       }
       setMeta(m); setLoaded(true);
     })();
@@ -275,6 +283,7 @@ export default function App() {
   const gColor = planPct >= 100 ? T.up : planPct >= 92 ? T.warn : T.down;
 
   const flagged = week.trending.filter((r) => flag(r, meta.thresholds));
+  const flaggedAhead = week.trending.filter((r) => flagAhead(r, meta.thresholds));
 
   const sortedWeeks = [...meta.weeks].sort();
   const idx = sortedWeeks.indexOf(meta.activeWeek);
@@ -309,6 +318,7 @@ export default function App() {
               <button key={key} className={tab === key ? "on" : ""} onClick={() => setTab(key)}>
                 <Icon size={16} />{label}
                 {key === "trending" && flagged.length > 0 && <span className="navtag">{flagged.length}</span>}
+                {key === "ahead" && flaggedAhead.length > 0 && <span className="navtag" style={{ background: T.up }}>{flaggedAhead.length}</span>}
                 {key === "tips" && week.tips.filter((t) => (t.status || "not_tried") !== "not_tried").length > 0 &&
                   <span className="navtag" style={{ background: T.up }}>{week.tips.filter((t) => (t.status || "not_tried") !== "not_tried").length}</span>}
               </button>
@@ -322,8 +332,9 @@ export default function App() {
             {tab === "swings" && <Swings {...{ week, meta, updateWeek }} />}
             {tab === "headlines" && <Headlines {...{ week, meta, updateWeek }} />}
             {tab === "tips" && <Tips {...{ meta, week, updateWeek }} />}
-            {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged }} />}
-            {tab === "update" && <Update {...{ meta, week, totalCall, totalCommit, netSwing, flagged }} />}
+            {tab === "trending" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "behind" }} />}
+            {tab === "ahead" && <Trending {...{ week, meta, updateWeek, flagged, flaggedAhead, mode: "ahead" }} />}
+            {tab === "update" && <Update {...{ meta, week, totalCall, totalCommit, netSwing, flagged, flaggedAhead }} />}
             {tab === "settings" && <SettingsTab {...{ meta, saveMeta, updateWeek, week }} />}
           </div>
         </div>
@@ -338,6 +349,15 @@ function flag(r, t) {
   if (r.day270 != null) checks.push(r.day270 < t.d270);
   if (!checks.length) return false; // not yet measured at any milestone
   return t.mode === "and" ? checks.every(Boolean) : checks.some(Boolean);
+}
+
+function flagAhead(r, t) {
+  const checks = [];
+  if (r.day180 != null) checks.push(r.day180 >= (t.aheadD180 ?? 90));
+  if (r.day270 != null) checks.push(r.day270 >= (t.aheadD270 ?? 100));
+  if (!checks.length) return false;
+  const mode = t.aheadMode || "and";
+  return mode === "and" ? checks.every(Boolean) : checks.some(Boolean);
 }
 
 /* ============================== OVERVIEW ============================== */
@@ -765,21 +785,45 @@ function Tips({ meta, week, updateWeek }) {
 }
 
 /* ============================== TRENDING ============================== */
-function Trending({ week, meta, updateWeek, flagged }) {
+function Trending({ week, meta, updateWeek, flagged, flaggedAhead, mode }) {
   const t = meta.thresholds;
+  const isAhead = mode === "ahead";
+  const matches = isAhead ? flaggedAhead : flagged;
   const [view, setView] = useState("flagged");
-  const add = () => updateWeek((w) => { w.trending.push({ id: uid(), account: "", owner: meta.managers[0] || "", day180: null, day270: null }); return w; });
+  const [ownerFilter, setOwnerFilter] = useState("all");
+  const add = () => updateWeek((w) => { w.trending.push({ id: uid(), account: "", owner: meta.managers[0] || "", day180: null, day270: null, actionPlan: "" }); return w; });
   const upd = (id, f, v) => updateWeek((w) => { w.trending = w.trending.map((r) => r.id === id ? { ...r, [f]: f === "day180" || f === "day270" ? num(v) : v } : r); return w; });
   const del = (id) => updateWeek((w) => { w.trending = w.trending.filter((r) => r.id !== id); return w; });
 
   const hasD270 = week.trending.some((r) => r.day270 != null);
-  const shown = view === "flagged" ? week.trending.filter((r) => flag(r, t)) : week.trending;
   const ownerOpts = (o) => (meta.managers.includes(o) || !o ? meta.managers : [o, ...meta.managers]);
+
+  // Sort: behind = worst-first (smallest pacing first); ahead = best-first (largest pacing first).
+  const sortRows = (list) => {
+    const score = (r) => (r.day180 == null ? 100 : r.day180) + (r.day270 == null ? 100 : r.day270);
+    return [...list].sort((a, b) => isAhead ? score(b) - score(a) : score(a) - score(b));
+  };
+
+  let shown = view === "flagged" ? matches : week.trending;
+  if (ownerFilter !== "all") shown = shown.filter((r) => r.owner === ownerFilter);
+  shown = sortRows(shown);
+
+  const title = isAhead ? "Trending ahead" : "Trending behind";
+  const accent = isAhead ? T.up : T.down;
+  const accentBg = isAhead ? "rgba(63,185,80,.15)" : "rgba(248,81,73,.15)";
+  const rowHighlight = isAhead ? "rgba(63,185,80,.06)" : "rgba(248,81,73,.06)";
+  const statusLabel = isAhead ? "Ahead" : "Behind";
+  const otherStatusLabel = isAhead ? "Not yet ahead" : "On pace";
+  const isFlaggedFn = isAhead ? (r) => flagAhead(r, t) : (r) => flag(r, t);
+
+  const ruleSummary = isAhead
+    ? <>An account shows here when its pacing is at or above <b style={{ color: T.text }}>{t.aheadD180 ?? 90}%</b> at Day 180 {hasD270 ? <><b style={{ color: T.text }}>{(t.aheadMode || "and") === "and" ? "and" : "or"}</b> <b style={{ color: T.text }}>{t.aheadD270 ?? 100}%</b> at Day 270</> : "(only Day 180 data loaded — see note below)"}. Values are attainment vs. expected pace. Adjust the rule in Settings.</>
+    : <>Accounts pacing behind plan. An account is flagged when it's behind <b style={{ color: T.text }}>{t.d180}%</b> at Day 180 {hasD270 ? <><b style={{ color: T.text }}>{t.mode === "and" ? "and" : "or"}</b> behind <b style={{ color: T.text }}>{t.d270}%</b> at Day 270</> : "(no Day 270 data loaded yet — see note below)"}. Values are attainment vs. expected pace, so 42 means at 42% of where the account should be. Accounts not yet at a milestone stay unflagged. Adjust the rule in Settings.</>;
 
   return (
     <>
-      <h2>Trending behind</h2>
-      <p className="sub">Accounts pacing behind plan. An account is flagged when it's behind <b style={{ color: T.text }}>{t.d180}%</b> at Day 180 {hasD270 ? <><b style={{ color: T.text }}>{t.mode === "and" ? "and" : "or"}</b> behind <b style={{ color: T.text }}>{t.d270}%</b> at Day 270</> : "(no Day 270 data loaded yet — see note below)"}. Values are attainment vs. expected pace, so 42 means at 42% of where the account should be. Accounts not yet at a milestone stay unflagged. Adjust the rule in Settings.</p>
+      <h2>{title}</h2>
+      <p className="sub">{ruleSummary}</p>
 
       {!hasD270 && (
         <div className="notice" style={{ marginBottom: 16 }}>
@@ -788,28 +832,49 @@ function Trending({ week, meta, updateWeek, flagged }) {
         </div>
       )}
 
-      <div className="between" style={{ marginBottom: 10 }}>
-        <b style={{ fontSize: 13, color: T.muted }}>{week.trending.length} tracked · {flagged.length} flagged</b>
-        <div className="seg">
-          <button className={view === "flagged" ? "on" : ""} onClick={() => setView("flagged")}>Flagged ({flagged.length})</button>
-          <button className={view === "all" ? "on" : ""} onClick={() => setView("all")}>All ({week.trending.length})</button>
+      <div className="between" style={{ marginBottom: 10, flexWrap: "wrap", gap: 10 }}>
+        <b style={{ fontSize: 13, color: T.muted }}>{week.trending.length} tracked · {matches.length} {isAhead ? "ahead" : "flagged"}</b>
+        <div className="row" style={{ gap: 10, flexWrap: "wrap" }}>
+          <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: T.muted }}>
+            Manager
+            <select value={ownerFilter} onChange={(e) => setOwnerFilter(e.target.value)} style={{ minWidth: 130 }}>
+              <option value="all">All managers</option>
+              {meta.managers.map((m) => <option key={m} value={m}>{m}</option>)}
+            </select>
+          </label>
+          <div className="seg">
+            <button className={view === "flagged" ? "on" : ""} onClick={() => setView("flagged")}>{isAhead ? "Ahead" : "Flagged"} ({matches.length})</button>
+            <button className={view === "all" ? "on" : ""} onClick={() => setView("all")}>All ({week.trending.length})</button>
+          </div>
         </div>
       </div>
 
       <div className="card" style={{ padding: 0, marginBottom: 14 }}>
-        {shown.length === 0 ? <div style={{ padding: 18 }}><div className="empty"><b>{view === "flagged" ? "Nothing flagged" : "No accounts yet"}</b>{view === "flagged" ? "No accounts breach the rule this week." : "Drop your CSV export below to populate the segment."}</div></div> :
+        {shown.length === 0 ? <div style={{ padding: 18 }}><div className="empty"><b>{view === "flagged" ? `Nothing ${isAhead ? "ahead" : "flagged"}` : "No accounts yet"}</b>{view === "flagged" ? `No accounts ${isAhead ? "meet the ahead rule" : "breach the rule"} this week${ownerFilter !== "all" ? ` for ${ownerFilter}` : ""}.` : "Drop your CSV export below to populate the segment."}</div></div> :
         <table>
-          <thead><tr><th>Account</th><th>Owner</th><th style={{ textAlign: "right" }}>Day 180</th><th style={{ textAlign: "right" }}>Day 270</th><th>Status</th><th></th></tr></thead>
+          <thead><tr>
+            <th>Account</th><th>Owner</th>
+            <th style={{ textAlign: "right" }}>Day 180</th><th style={{ textAlign: "right" }}>Day 270</th>
+            <th>Status</th><th>Action Plan</th><th></th>
+          </tr></thead>
           <tbody>{shown.map((r) => {
-            const f = flag(r, t);
+            const f = isFlaggedFn(r);
             return (
-              <tr key={r.id} style={{ background: f ? "rgba(248,81,73,.06)" : "transparent" }}>
+              <tr key={r.id} style={{ background: f ? rowHighlight : "transparent" }}>
                 <td><input value={r.account} placeholder="account" onChange={(e) => upd(r.id, "account", e.target.value)} /></td>
                 <td><select value={r.owner} onChange={(e) => upd(r.id, "owner", e.target.value)}>{ownerOpts(r.owner).map((m) => <option key={m}>{m}</option>)}</select></td>
                 <td className="cellnum"><input type="number" value={r.day180 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day180", e.target.value)} /></td>
                 <td className="cellnum"><input type="number" value={r.day270 ?? ""} placeholder="—" onChange={(e) => upd(r.id, "day270", e.target.value)} /></td>
-                <td>{f ? <span className="tag" style={{ background: "rgba(248,81,73,.15)", color: T.down }}>Behind</span>
-                  : <span className="tag" style={{ background: T.panel2, color: T.muted }}>On pace</span>}</td>
+                <td>{f ? <span className="tag" style={{ background: accentBg, color: accent }}>{statusLabel}</span>
+                  : <span className="tag" style={{ background: T.panel2, color: T.muted }}>{otherStatusLabel}</span>}</td>
+                <td style={{ minWidth: 220 }}>
+                  <textarea
+                    value={r.actionPlan || ""}
+                    placeholder={isAhead ? "what's working…" : "next step, owner, ETA…"}
+                    onChange={(e) => upd(r.id, "actionPlan", e.target.value)}
+                    style={{ width: "100%", minHeight: 32, resize: "vertical", padding: "5px 7px", fontSize: 12.5 }}
+                  />
+                </td>
                 <td><button className="ico" onClick={() => del(r.id)}><Trash2 size={15} /></button></td>
               </tr>);
           })}</tbody>
@@ -842,8 +907,20 @@ function Importer({ meta, updateWeek }) {
   // Worst = smallest pacing values; treat a missing milestone as 100% (not worse).
   function rankBehind(list) {
     const t = meta.thresholds;
-    const deficit = (r) => (r.day180 == null ? 100 : r.day180) + (r.day270 == null ? 100 : r.day270);
-    return list.filter((r) => flag(r, t)).sort((a, b) => deficit(a) - deficit(b)).slice(0, topN);
+    const score = (r) => (r.day180 == null ? 100 : r.day180) + (r.day270 == null ? 100 : r.day270);
+    return list.filter((r) => flag(r, t)).sort((a, b) => score(a) - score(b)).slice(0, topN);
+  }
+  // Ahead: highest pacing first.
+  function rankAhead(list) {
+    const t = meta.thresholds;
+    const score = (r) => (r.day180 == null ? 0 : r.day180) + (r.day270 == null ? 0 : r.day270);
+    return list.filter((r) => flagAhead(r, t)).sort((a, b) => score(b) - score(a)).slice(0, topN);
+  }
+  function rankUnion(list) {
+    const behind = rankBehind(list);
+    const ahead = rankAhead(list);
+    const seen = new Set(behind.map((r) => r.id));
+    return [...behind, ...ahead.filter((r) => !seen.has(r.id))];
   }
 
   const pctNum = (v) => { const n = parseFloat(String(v ?? "").replace(/[^0-9.\-]/g, "")); return isNaN(n) ? null : n; };
@@ -899,6 +976,7 @@ function Importer({ meta, updateWeek }) {
       owner: String(r[map.owner] ?? "").trim() || (meta.managers[0] || ""),
       day180: map.day180 ? conv(r[map.day180]) : null,
       day270: map.day270 ? conv(r[map.day270]) : null,
+      actionPlan: "",
     })).filter((x) => x.account);
   }
 
@@ -906,9 +984,16 @@ function Importer({ meta, updateWeek }) {
     if (!map.account) { setErr("Tell me which column is the account name first."); return; }
     const all = build();
     if (!all.length) { setErr("No rows landed — double-check the account column."); return; }
-    const top = rankBehind(all);
-    if (!top.length) { setErr(`None of the ${all.length} rows breach the behind rule (Day 180 < ${meta.thresholds.d180}% ${meta.thresholds.mode === "and" ? "and" : "or"} Day 270 < ${meta.thresholds.d270}%). Loosen the rule in Settings if needed.`); return; }
-    updateWeek((w) => { w.trending = mode === "replace" ? top : [...w.trending, ...top]; return w; });
+    const top = rankUnion(all);
+    if (!top.length) { setErr(`None of the ${all.length} rows match the behind (D180 < ${meta.thresholds.d180}%) or ahead (D180 ≥ ${meta.thresholds.aheadD180 ?? 90}%) rules. Loosen the rules in Settings if needed.`); return; }
+    updateWeek((w) => {
+      const incoming = top.map((r) => {
+        const prev = w.trending.find((x) => x.account === r.account && x.owner === r.owner);
+        return prev?.actionPlan ? { ...r, actionPlan: prev.actionPlan } : r;
+      });
+      w.trending = mode === "replace" ? incoming : [...w.trending, ...incoming];
+      return w;
+    });
     reset();
   }
   function reset() { setRows(null); setHeaders([]); setFileName(""); setErr(""); }
@@ -916,10 +1001,17 @@ function Importer({ meta, updateWeek }) {
   function importPaste() {
     const lines = bulk.trim().split("\n").map((l) => l.split(/[\t,]/).map((x) => x.trim())).filter((r) => r[0]);
     if (!lines.length) { setErr("Nothing to import."); return; }
-    const built = lines.map((r) => ({ id: uid(), account: r[0], owner: r[1] || meta.managers[0] || "", day180: pctNum(r[2]), day270: pctNum(r[3]) }));
-    const top = rankBehind(built);
-    if (!top.length) { setErr(`None of the ${built.length} rows breach the behind rule (Day 180 < ${meta.thresholds.d180}% ${meta.thresholds.mode === "and" ? "and" : "or"} Day 270 < ${meta.thresholds.d270}%).`); return; }
-    updateWeek((w) => { w.trending = mode === "replace" ? top : [...w.trending, ...top]; return w; });
+    const built = lines.map((r) => ({ id: uid(), account: r[0], owner: r[1] || meta.managers[0] || "", day180: pctNum(r[2]), day270: pctNum(r[3]), actionPlan: "" }));
+    const top = rankUnion(built);
+    if (!top.length) { setErr(`None of the ${built.length} rows match the behind or ahead rules.`); return; }
+    updateWeek((w) => {
+      const incoming = top.map((r) => {
+        const prev = w.trending.find((x) => x.account === r.account && x.owner === r.owner);
+        return prev?.actionPlan ? { ...r, actionPlan: prev.actionPlan } : r;
+      });
+      w.trending = mode === "replace" ? incoming : [...w.trending, ...incoming];
+      return w;
+    });
     setBulk(""); setErr("");
   }
 
@@ -953,10 +1045,11 @@ function Importer({ meta, updateWeek }) {
           {(() => {
             const all = build();
             const behind = all.filter((r) => flag(r, meta.thresholds));
+            const ahead = all.filter((r) => flagAhead(r, meta.thresholds));
             return (
               <div className="row between" style={{ marginBottom: 4 }}>
                 <span style={{ fontSize: 12.5, color: T.muted }}>
-                  <span className="mono" style={{ color: T.text }}>{fileName}</span> · {rows.length} row{rows.length !== 1 ? "s" : ""} · <b style={{ color: T.down }}>{behind.length}</b> behind plan · matched columns shown below
+                  <span className="mono" style={{ color: T.text }}>{fileName}</span> · {rows.length} row{rows.length !== 1 ? "s" : ""} · <b style={{ color: T.down }}>{behind.length}</b> behind · <b style={{ color: T.up }}>{ahead.length}</b> ahead · matched columns shown below
                 </span>
                 <button className="btn gho sm" onClick={reset}>Choose another file</button>
               </div>
@@ -983,20 +1076,36 @@ function Importer({ meta, updateWeek }) {
             {scale === "ratio" && <span style={{ color: T.faint }}>× 100 on import — e.g. 0.43 → 43%</span>}
           </div>
 
-          <div style={{ border: "1px solid " + T.line, borderRadius: 9, overflow: "hidden", marginBottom: 12 }}>
-            <table className="prev">
-              <thead><tr>{TARGETS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
-              <tbody>
-                {rankBehind(build()).slice(0, 5).map((r) => (
-                  <tr key={r.id}>
-                    <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
-                    <td>{r.owner}</td>
-                    <td className="mono">{r.day180 == null ? "—" : r.day180 + "%"}</td>
-                    <td className="mono">{r.day270 == null ? "—" : r.day270 + "%"}</td>
-                  </tr>))}
-              </tbody>
-            </table>
-          </div>
+          {(() => {
+            const all = build();
+            const previewBehind = rankBehind(all).slice(0, 4);
+            const previewAhead = rankAhead(all).slice(0, 4);
+            return (
+              <div style={{ border: "1px solid " + T.line, borderRadius: 9, overflow: "hidden", marginBottom: 12 }}>
+                <table className="prev">
+                  <thead><tr><th></th>{TARGETS.map(([k, l]) => <th key={k}>{l}</th>)}</tr></thead>
+                  <tbody>
+                    {previewBehind.map((r) => (
+                      <tr key={r.id}>
+                        <td><span className="tag" style={{ background: "rgba(248,81,73,.15)", color: T.down }}>Behind</span></td>
+                        <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
+                        <td>{r.owner}</td>
+                        <td className="mono">{r.day180 == null ? "—" : r.day180 + "%"}</td>
+                        <td className="mono">{r.day270 == null ? "—" : r.day270 + "%"}</td>
+                      </tr>))}
+                    {previewAhead.map((r) => (
+                      <tr key={r.id}>
+                        <td><span className="tag" style={{ background: "rgba(63,185,80,.15)", color: T.up }}>Ahead</span></td>
+                        <td>{r.account || <span style={{ color: T.faint }}>—</span>}</td>
+                        <td>{r.owner}</td>
+                        <td className="mono">{r.day180 == null ? "—" : r.day180 + "%"}</td>
+                        <td className="mono">{r.day270 == null ? "—" : r.day270 + "%"}</td>
+                      </tr>))}
+                  </tbody>
+                </table>
+              </div>
+            );
+          })()}
 
           <div className="row" style={{ flexWrap: "wrap", gap: 10, alignItems: "center" }}>
             <div className="seg">
@@ -1006,12 +1115,17 @@ function Importer({ meta, updateWeek }) {
             <label style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, color: T.muted }}>
               Top
               <input type="number" min="1" max="200" value={topN} onChange={(e) => setTopN(Math.max(1, Math.min(200, parseInt(e.target.value, 10) || 1)))} style={{ width: 60 }} />
-              behind
+              each
             </label>
-            <button className="btn pri sm" onClick={doImport}><Check size={14} />Import top {rankBehind(build()).length} behind</button>
+            {(() => {
+              const all = build();
+              const nb = rankBehind(all).length;
+              const na = rankAhead(all).length;
+              return <button className="btn pri sm" onClick={doImport}><Check size={14} />Import {nb} behind + {na} ahead</button>;
+            })()}
           </div>
           <p className="sub" style={{ margin: "10px 0 0", fontSize: 11.5 }}>
-            Only accounts breaching the rule (Day 180 &lt; {meta.thresholds.d180}% {meta.thresholds.mode === "and" ? "and" : "or"} Day 270 &lt; {meta.thresholds.d270}%) come through, sorted worst-first and capped at the Top value. “Replace” swaps the whole segment for this week; “Add” appends.
+            Imports the worst-pacing behind accounts (Day 180 &lt; {meta.thresholds.d180}%) and the best-pacing ahead accounts (Day 180 ≥ {meta.thresholds.aheadD180 ?? 90}%), each capped at the Top value. Existing Action Plans are preserved if the same account/owner is re-imported. “Replace” swaps the whole segment for this week; “Add” appends.
           </p>
         </>
       )}
@@ -1037,7 +1151,7 @@ function Importer({ meta, updateWeek }) {
 }
 
 /* ============================== UPDATE ============================== */
-function Update({ meta, week, totalCall, totalCommit, netSwing, flagged }) {
+function Update({ meta, week, totalCall, totalCommit, netSwing, flagged, flaggedAhead }) {
   const [copied, setCopied] = useState(false);
   const text = useMemo(() => {
     const L = [];
@@ -1070,10 +1184,20 @@ function Update({ meta, week, totalCall, totalCommit, netSwing, flagged }) {
     }
     if (flagged.length) {
       L.push(``); L.push(`TRENDING BEHIND`);
-      flagged.forEach((r) => L.push(`• ${r.account} (${r.owner}) — ${pct(r.day180)} @ D180, ${pct(r.day270)} @ D270`));
+      flagged.forEach((r) => {
+        L.push(`• ${r.account} (${r.owner}) — ${pct(r.day180)} @ D180, ${pct(r.day270)} @ D270`);
+        if (r.actionPlan) L.push(`    Action plan: ${r.actionPlan}`);
+      });
+    }
+    if (flaggedAhead && flaggedAhead.length) {
+      L.push(``); L.push(`TRENDING AHEAD`);
+      flaggedAhead.forEach((r) => {
+        L.push(`• ${r.account} (${r.owner}) — ${pct(r.day180)} @ D180, ${pct(r.day270)} @ D270`);
+        if (r.actionPlan) L.push(`    What's working: ${r.actionPlan}`);
+      });
     }
     return L.join("\n");
-  }, [meta, week, totalCall, totalCommit, netSwing, flagged]);
+  }, [meta, week, totalCall, totalCommit, netSwing, flagged, flaggedAhead]);
 
   function copy() { navigator.clipboard?.writeText(text); setCopied(true); setTimeout(() => setCopied(false), 1600); }
 
@@ -1135,6 +1259,21 @@ function SettingsTab({ meta, saveMeta, updateWeek, week }) {
               <div className="seg">
                 <button className={t.mode === "and" ? "on" : ""} onClick={() => setT({ mode: "and" })}>AND (both)</button>
                 <button className={t.mode === "or" ? "on" : ""} onClick={() => setT({ mode: "or" })}>OR (either)</button>
+              </div></label>
+          </div>
+        </div>
+
+        <div className="card">
+          <b style={{ fontSize: 14 }}>Trending-ahead rule</b>
+          <div className="grid" style={{ gap: 12, marginTop: 12 }}>
+            <label className="fld">Ahead threshold at Day 180 (%)
+              <input type="number" value={t.aheadD180 ?? 90} onChange={(e) => setT({ aheadD180: Number(e.target.value) })} /></label>
+            <label className="fld">Ahead threshold at Day 270 (%)
+              <input type="number" value={t.aheadD270 ?? 100} onChange={(e) => setT({ aheadD270: Number(e.target.value) })} /></label>
+            <label className="fld">Combine conditions with
+              <div className="seg">
+                <button className={(t.aheadMode || "and") === "and" ? "on" : ""} onClick={() => setT({ aheadMode: "and" })}>AND (both)</button>
+                <button className={(t.aheadMode || "and") === "or" ? "on" : ""} onClick={() => setT({ aheadMode: "or" })}>OR (either)</button>
               </div></label>
           </div>
         </div>
